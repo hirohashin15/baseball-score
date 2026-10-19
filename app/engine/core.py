@@ -553,7 +553,7 @@ class Game:
             if rf and fielders and batter_dest == "out" and meta["kind"] == "ground":
                 seq = list(rf) + (list(fielders)[1:] if rf[-1] == fielders[0] else list(fielders))
                 code = "-".join(str(x) for x in seq)
-            code += " DP" if summary["outs"] == 2 else " TP"
+            code += " 併" if summary["outs"] == 2 else " 三重"
         if summary["outs"] >= 2 and result not in ("strikeout",):
             label += "（併殺）" if summary["outs"] == 2 else "（三重殺）"
         elif result == "strikeout" and summary["outs"] >= 2:

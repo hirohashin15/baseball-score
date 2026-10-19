@@ -399,7 +399,7 @@ function bookHtml(v) {
       ${bk.rows.map(r => `<tr><td class="l">${r.order}</td><td class="l name">${esc(names[r.order] || "")}</td>${cols.map(i => `<td class="${(r.cells[i] || []).length > 1 ? "cell-multi" : ""}">${(r.cells[i] || []).map(esc).join("<br>")}</td>`).join("")}</tr>`).join("")}
     </tbody></table></div>`;
   };
-  return `<div class="wrap">${team("away")}${team("home")}<p class="muted">記号：3A＝単独刺殺、6-3＝遊ゴロ、F8＝中飛、L4＝二直、K＝三振、見K＝見逃し三振、B＝四球、DB＝死球、E6＝遊撃手の失策、FC＝野選、(6-4)＝併殺崩れ（3A以外はβ版の暫定表記）</p></div>`;
+  return `<div class="wrap">${team("away")}${team("home")}<p class="muted">記号：6-3＝遊ゴロ（遊撃手→一塁手）、3A＝一塁手が自分で踏んだゴロ、中飛＝センターフライ、二直＝セカンドライナー、左安・中2・右3・左本＝安打・二塁打・三塁打・本塁打と方向、遊失＝遊撃手の失策、(6-4)＝併殺崩れ、併＝併殺</p></div>`;
 }
 
 // ================================================================ 閲覧画面

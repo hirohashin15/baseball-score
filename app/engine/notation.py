@@ -106,45 +106,42 @@ def pa_label(result: str, pos: int | None, extra: dict | None = None) -> str:
 
 
 def score_code(result: str, pos: int | None, fielders: list[int] | None, extra: dict | None = None) -> str:
-    """スコア表示用の記号（3A、6-3、K など）
-
-    ※ 3A（単独刺殺）以外の記号はベータ版の暫定表記
-    """
+    """スコア表示用の記号（日本語の略記 ゴロは 6-3、単独刺殺は 3A）"""
     extra = extra or {}
     p = POS_JA.get(pos or 0, "")
     if result in ("single", "double", "triple", "home_run"):
         mark = {"single": "安", "double": "2", "triple": "3", "home_run": "本"}[result]
         return f"{p}{mark}"
     if result == "ground_out":
-        return _seq(fielders) or f"{pos or ''}G"
+        return _seq(fielders) or f"{p}ゴ"
     if result == "fly_out":
-        return f"F{pos or ''}"
+        return f"{p}飛"
     if result == "line_out":
-        return f"L{pos or ''}"
+        return f"{p}直"
     if result == "foul_fly":
-        return f"FF{pos or ''}"
+        return f"{p}邪飛"
     if result == "infield_fly":
-        return f"IF{pos or ''}"
+        return f"{p}飛(IF)"
     if result == "sac_bunt":
-        return f"犠{_seq(fielders) or pos or ''}"
+        return f"犠{_seq(fielders) or p}"
     if result == "sac_fly":
-        return f"犠F{pos or ''}"
+        return f"{p}犠飛"
     if result == "reach_on_error":
-        return f"E{extra.get('error_pos') or pos or ''}"
+        return f"{POS_JA.get(extra.get('error_pos') or pos or 0, '')}失"
     if result == "fielders_choice":
-        return "FC"
+        return f"{p}野選"
     if result == "force_out":
-        return f"({_seq(extra.get('runner_fielders')) or pos or ''})"
+        return f"({_seq(extra.get('runner_fielders')) or p})"
     if result == "strikeout":
-        return "見K" if extra.get("looking") else "K"
+        return "見三振" if extra.get("looking") else "三振"
     if result == "strikeout_dropped":
-        return "K振逃"
+        return "振逃"
     if result == "walk":
-        return "B"
+        return "四球"
     if result == "ibb":
-        return "IB"
+        return "敬遠"
     if result == "hbp":
-        return "DB"
+        return "死球"
     if result == "interference":
-        return "IF妨"
+        return "打妨"
     return "?"

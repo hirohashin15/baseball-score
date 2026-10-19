@@ -393,4 +393,4 @@ def test_double_play_score_code_is_joined():
     t.pa("single", 7)
     t.pa("ground_out", 6, fielders=[4, 3], moves=[{"from": 1, "to": "out", "how": "force", "fielders": [6, 4]}])
     g = t.ok()
-    assert g.pa_log[-1]["code"] == "6-4-3 DP"
+    assert g.pa_log[-1]["code"] == "6-4-3 併"
