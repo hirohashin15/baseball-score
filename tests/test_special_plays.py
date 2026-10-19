@@ -393,4 +393,103 @@ def test_double_play_score_code_is_joined():
     t.pa("single", 7)
     t.pa("ground_out", 6, fielders=[4, 3], moves=[{"from": 1, "to": "out", "how": "force", "fielders": [6, 4]}])
     g = t.ok()
-    assert g.pa_log[-1]["code"] == "6-4-3 併"
+    assert g.pa_log[-1]["code"] == "遊ゴロ併"
+    assert g.pa_log[-1]["seq"] == "6-4-3"
+
+
+# ---------------------------------------------------------------- 自責点（公認野球規則9.16）
+def test_runner_advanced_by_passed_ball_then_single_is_unearned():
+    t = G()
+    t.pa("single", 7)
+    t.runner([{"from": 1, "to": 2, "how": "pb"}])
+    t.pa("single", 8, moves=[{"from": 2, "to": 4, "how": "adv"}])
+    g = t.ok()
+    assert g.pit["HP1"]["R"] == 1 and g.pit["HP1"]["ER"] == 0
+
+
+def test_runner_advanced_by_passed_ball_then_home_run_is_earned():
+    t = G()
+    t.pa("single", 7)
+    t.runner([{"from": 1, "to": 2, "how": "pb"}])
+    t.pa("home_run", 8)
+    g = t.ok()
+    assert g.pit["HP1"]["R"] == 2 and g.pit["HP1"]["ER"] == 2
+
+
+def test_relief_pitcher_gets_no_benefit_of_earlier_chances():
+    t = G()
+    t.pa("reach_on_error", 6)          # 失策がなければ1アウト目
+    t.pa("strikeout")
+    t.pa("strikeout")                  # 実際は2アウト（失策がなければ3アウト）
+    t.sub(kind="pitcher", side="home", in_player="HP2")
+    t.pa("home_run", 7)
+    g = t.ok()
+    assert g.pit["HP1"]["R"] == 1 and g.pit["HP1"]["ER"] == 0   # 失策出塁の走者
+    assert g.pit["HP2"]["R"] == 1 and g.pit["HP2"]["ER"] == 1   # 救援投手には登板前の機会の恩恵なし
+    assert g.team_stats["home"]["ER"] == 0                       # チームとしては自責点0
+
+
+def test_error_play_extra_advance_is_unearned():
+    t = G()
+    t.pa("double", 7)                                           # 二塁
+    t.pa("reach_on_error", 5, moves=[{"from": 2, "to": 3, "how": "adv"}])
+    t.pa("sac_fly", 8)                                          # 三塁走者生還
+    g = t.ok()
+    # 失策のプレーで二塁→三塁（押し出しではない）は失策による進塁 → 犠飛での生還は自責点にしない
+    assert g.pit["HP1"]["R"] == 1 and g.pit["HP1"]["ER"] == 0
+
+
+# ---------------------------------------------------------------- セーブ・ホールド
+def _closing_game(extra_reliever: bool):
+    t = G({"innings": 3, "starter_min_outs": 3})
+    t.three_outs()                                  # 1回表（HP1）
+    t.pa("home_run", 7); t.pa("home_run", 7)        # 1回裏 2-0
+    t.three_outs()
+    t.three_outs()                                  # 2回表（HP1）
+    t.three_outs()                                  # 2回裏
+    t.sub(kind="pitcher", side="home", in_player="HP2")
+    if extra_reliever:
+        t.pa("strikeout")
+        t.sub(kind="pitcher", side="home", in_player="HP3")
+        t.pa("strikeout"); t.pa("strikeout")
+    else:
+        t.three_outs()                              # 3回表（HP2）→ 試合終了
+    return t.ok()
+
+
+def test_save_awarded_to_closer():
+    g = _closing_game(False)
+    assert g.decisions["win"] == "HP1" and g.decisions["save"] == "HP2"
+
+
+def test_hold_awarded_to_middle_reliever():
+    g = _closing_game(True)
+    assert g.decisions["save"] == "HP3"
+    assert g.decisions["holds"] == ["HP2"]
+
+
+# ---------------------------------------------------------------- 守備
+def test_double_play_credited_to_each_fielder_and_catcher_steals():
+    t = G()
+    t.pa("single", 7)
+    t.runner([{"from": 1, "to": 2, "how": "sb"}])
+    t.pa("single", 7, moves=[{"from": 2, "to": 3, "how": "adv"}])
+    t.runner([{"from": 1, "to": "out", "how": "cs", "fielders": [2, 6]}])
+    t.pa("single", 7)
+    t.pa("ground_out", 6, fielders=[4, 3], moves=[{"from": 1, "to": "out", "how": "force", "fielders": [6, 4]}])
+    g = t.ok()
+    # H2=遊撃手 H3=二塁手 H4=一塁手 H8=捕手
+    assert g.fld["H2"]["DP"] == 1 and g.fld["H3"]["DP"] == 1 and g.fld["H4"]["DP"] == 1
+    assert g.fld["H8"]["SB_A"] == 1 and g.fld["H8"]["CS_C"] == 1
+
+
+def test_pickoff_attempt_is_logged_without_change():
+    t = G()
+    t.pa("single", 7)
+    t.runner([])  # moves 空 → エラー
+    _, halted = t.run()
+    assert halted
+    t.events.pop()
+    t.add("runner", {"moves": [], "attempt": True, "base": 1})
+    g = t.ok()
+    assert g.bases[1].player_id == "A1" and g.outs == 0

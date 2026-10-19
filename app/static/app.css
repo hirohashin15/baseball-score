@@ -219,3 +219,60 @@ input[type=text], input[type=date], input[type=number], input[type=password], se
 #toast.show { opacity: 1; }
 #toast.err { background: var(--warn); color: #fff; }
 .urlbox { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 8px 10px; word-break: break-all; font-size: .85rem; }
+
+/* ---------- 追加（v2） ---------- */
+.topbar #nav-back { background: transparent; border: 1px solid rgba(255,255,255,.35); color: var(--board-ink); border-radius: var(--radius-s); padding: 6px 10px; font-size: .9rem; }
+.tabs.five { grid-template-columns: repeat(5, 1fr); }
+.tabs.five button { font-size: .85rem; }
+.pad.three { grid-template-columns: repeat(3, 1fr); }
+
+/* 押した手応え：ボタンが一瞬沈む＋記録後にスコアボードが光る */
+.pad button.pressed { animation: press .25s ease-out; }
+@keyframes press { 0% { transform: scale(.94); filter: brightness(.85); } 100% { transform: none; filter: none; } }
+.board.flash .lamps, .board.flash .ls td.r { animation: glow .6s ease-out; }
+@keyframes glow { 0% { filter: brightness(1.8); } 100% { filter: none; } }
+@media (prefers-reduced-motion: reduce) { .pad button.pressed, .board.flash .lamps, .board.flash .ls td.r { animation: none; } }
+#toast.ok { background: var(--board); color: var(--board-ink); font-weight: 700; }
+
+/* スコアボードの回の数字（押すとその回の結果） */
+.ls .cell { background: none; border: 0; color: inherit; font: inherit; padding: 2px 0; width: 100%; min-height: 32px; text-decoration: underline dotted rgba(255,255,255,.4); text-underline-offset: 4px; }
+
+/* 経過：打席ごとのまとまり */
+.pa-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 10px 2px 2px; border-bottom: 0 !important; font-size: .93rem; }
+.pa-head b { color: var(--ink); }
+.ev.in-pa .item { padding-left: 14px; min-height: 44px; }
+.ev.in-pa .item .grow::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--line); margin: 0 8px 2px -12px; }
+
+/* 1球ごとの詳細の小さなスコアボード */
+.mini-board { background: var(--board); color: var(--board-ink); border-radius: var(--radius-m); padding: 10px 12px; margin: 6px 0 12px; display: grid; gap: 6px; }
+.mini-board .mb-top { display: flex; justify-content: space-between; align-items: baseline; }
+.mini-board .mb-score { font-size: 1.6rem; font-weight: 700; }
+.mini-board .mb-bases { display: flex; gap: 10px; flex-wrap: wrap; font-size: .85rem; }
+.mini-board .muted { color: var(--board-dim); }
+
+/* 打球入力：手順の表示・結果ボタン・守備位置 */
+.steps { display: flex; gap: 6px; list-style: none; padding: 0; margin: 0 0 10px; counter-reset: st; }
+.steps li { flex: 1; text-align: center; font-size: .8rem; color: var(--muted); border-bottom: 3px solid var(--line); padding-bottom: 4px; }
+.steps li.on { color: var(--ink); font-weight: 700; border-color: var(--board); }
+.steps li.done { color: var(--board); border-color: var(--board-dim); }
+.chips.cats .chip { min-height: 40px; }
+.res-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 10px 0 4px; }
+.res-grid .res { min-height: 48px; border-radius: var(--radius-m); border: 1px solid var(--line); background: var(--paper); font-size: .92rem; font-weight: 700; padding: 4px; }
+.res-grid .res.on { background: var(--board); color: var(--board-ink); border-color: var(--board); }
+.posgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.pos-btn { min-height: 50px; border-radius: var(--radius-m); border: 1px solid var(--line); background: var(--paper); font-weight: 700; font-size: 1.05rem; }
+.pos-btn small { display: block; font-size: .7rem; font-weight: 400; color: var(--muted); }
+.pos-btn.on { background: var(--board); color: var(--board-ink); border-color: var(--board); }
+.pos-btn.on small { color: var(--board-dim); }
+.pick-summary { margin-top: 14px; font-weight: 700; padding: 8px 12px; border-left: 4px solid var(--board); background: var(--paper); border-radius: 0 var(--radius-s) var(--radius-s) 0; }
+
+/* 選手一覧（横に並べる） */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin: 12px 0; }
+.tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 76px; padding: 6px 4px; border: 1px solid var(--line); border-radius: var(--radius-m); background: var(--paper); }
+.tile .no { font-size: 1.5rem; font-weight: 700; line-height: 1; }
+.tile .nm { font-size: .85rem; text-align: center; word-break: break-all; }
+.tile.off { opacity: .45; }
+
+.lineup-row.pos .o { font-family: "BIZ UDPGothic", sans-serif; font-size: 1rem; }
+.decisions { font-weight: 700; margin-top: 14px; }
+.newopp { border-left: 3px solid var(--line); padding-left: 10px; margin-top: 6px; }

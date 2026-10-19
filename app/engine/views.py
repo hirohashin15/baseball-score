@@ -12,10 +12,12 @@ from typing import Any
 from . import notation as nt
 from .core import Game, RESULT_META
 
-BAT_KEYS = ["PA", "AB", "R", "H", "2B", "3B", "HR", "TB", "RBI", "BB", "IBB", "HBP", "SO",
-            "SH", "SF", "SB", "CS", "GIDP", "ROE"]
-PIT_KEYS = ["OUTS", "BF", "pitches", "H", "HR", "BB", "IBB", "HBP", "SO", "WP", "BK", "R", "ER"]
-FLD_KEYS = ["PO", "A", "E", "PB"]
+# 成績の項目（NPBの個人成績の項目に合わせる）
+BAT_KEYS = ["G", "PA", "AB", "R", "H", "2B", "3B", "HR", "TB", "RBI", "SB", "CS", "SH", "SF",
+            "BB", "IBB", "HBP", "SO", "GIDP", "ROE"]
+PIT_KEYS = ["G", "W", "L", "SV", "HLD", "OUTS", "BF", "pitches", "H", "HR", "BB", "IBB", "HBP", "SO",
+            "WP", "BK", "R", "ER"]
+FLD_KEYS = ["G", "PO", "A", "E", "DP", "PB", "SB_A", "CS_C"]
 
 
 def _rate(n: float, d: float, digits: int = 3) -> str | None:
@@ -37,8 +39,14 @@ def batting_rates(c: Counter) -> dict:
 
 
 def ip_text(outs: int) -> str:
-    """投球回の表記（アウト数 → 5回1/3 なら "5.1"）"""
-    return f"{outs // 3}.{outs % 3}" if outs % 3 else f"{outs // 3}"
+    """投球回の表記（NPB式：5回1/3 → "5 1/3"）"""
+    return f"{outs // 3} {outs % 3}/3" if outs % 3 else f"{outs // 3}"
+
+
+def fielding_rates(c: Counter) -> dict:
+    chances = c["PO"] + c["A"] + c["E"]
+    att = c["SB_A"] + c["CS_C"]
+    return {"FPCT": _rate(c["PO"] + c["A"], chances), "CS_PCT": _rate(c["CS_C"], att)}
 
 
 def pitching_rates(c: Counter, innings_per_game: int = 9) -> dict:
@@ -119,7 +127,8 @@ def game_view(g: Game, halted: dict | None, team_names: dict | None = None) -> d
         "pa_log": [_pa_view(g, pa) for pa in g.pa_log],
         "box": box_score(g),
         "scorebook": scorebook(g),
-        "decisions": {k: (_player(g, v) if k in ("win", "loss", "save") else v)
+        "decisions": {k: (_player(g, v) if k in ("win", "loss", "save")
+                          else [_player(g, x) for x in v] if k == "holds" else v)
                       for k, v in (g.decisions or {}).items()},
         "forced": sorted(g.forced_bases()),
     }
@@ -168,53 +177,100 @@ def _pa_view(g: Game, pa: dict) -> dict:
     }
 
 
+def player_game_stats(g: Game) -> dict[str, dict]:
+    """選手ごとの、この試合の成績（打撃・投手・守備） 試合数（G）も付ける"""
+    out: dict[str, dict] = {}
+    d = g.decisions or {}
+    holds = set(d.get("holds") or [])
+    for side in ("away", "home"):
+        t = g.teams[side]
+        for pid in t.used | set(t.pitchers_used):
+            out.setdefault(pid, {"bat": Counter(), "pit": Counter(), "fld": Counter(), "decision": None,
+                                 "positions": [], "side": side})
+    for pid, c in g.bat.items():
+        out.setdefault(pid, {"bat": Counter(), "pit": Counter(), "fld": Counter(), "decision": None,
+                             "positions": [], "side": g.roster.get(pid, {}).get("team")})
+        out[pid]["bat"] = Counter(c)
+    for pid, c in g.pit.items():
+        if pid in out:
+            out[pid]["pit"] = Counter(c)
+    for pid, c in g.fld.items():
+        if pid in out:
+            out[pid]["fld"] = Counter(c)
+    batted = set()
+    for side in ("away", "home"):
+        batted |= {pid for _, pid in g.teams[side].slot_history}
+    for pid, row in out.items():
+        if pid in batted or row["bat"]["PA"]:
+            row["bat"]["G"] = 1
+        if any(pid in g.teams[s].pitchers_used for s in ("away", "home")):
+            row["pit"]["G"] = 1
+        if g.fpos.get(pid):
+            row["fld"]["G"] = 1
+            row["positions"] = sorted(g.fpos[pid])
+        dec = None
+        if d.get("win") == pid:
+            dec, row["pit"]["W"] = "勝", 1
+        elif d.get("loss") == pid:
+            dec, row["pit"]["L"] = "敗", 1
+        elif d.get("save") == pid:
+            dec, row["pit"]["SV"] = "S", 1
+        elif pid in holds:
+            dec, row["pit"]["HLD"] = "H", 1
+        row["decision"] = dec
+    return out
+
+
 def box_score(g: Game) -> dict:
-    """打撃・投手・守備の個人成績表"""
+    """打撃成績・守備成績（投手成績を含む）の表"""
+    stats = player_game_stats(g)
+    inn = int(g.rules.get("innings") or 9)
     out: dict[str, Any] = {}
     for side in ("away", "home"):
         t = g.teams[side]
-        rows = []
-        seen = set()
+        rows, seen = [], set()
+        pos_of = {}
+        for order, pid in t.slot_history:
+            pos_of.setdefault(pid, order)
         for order, pid in sorted(t.slot_history, key=lambda x: x[0]):
             if pid in seen:
                 continue
             seen.add(pid)
-            c = g.bat.get(pid, Counter())
+            c = stats.get(pid, {}).get("bat", Counter())
             rows.append({"order": order, **(_player(g, pid) or {}),
+                         "positions": "".join(nt.POS_JA[n] for n in stats.get(pid, {}).get("positions", [])),
                          **{k: c[k] for k in BAT_KEYS}, **batting_rates(c)})
-        # 打順外で打撃記録がある選手（念のため）
-        for pid, c in g.bat.items():
-            if pid not in seen and g.roster.get(pid, {}).get("team") == side and c["PA"]:
-                rows.append({"order": None, **(_player(g, pid) or {}), **{k: c[k] for k in BAT_KEYS},
-                             **batting_rates(c)})
         tot = Counter()
         for r in rows:
             for k in BAT_KEYS:
                 tot[k] += r[k]
         pitchers = []
         for pid in t.pitchers_used:
-            c = g.pit.get(pid, Counter())
-            dec = None
-            if g.decisions.get("win") == pid:
-                dec = "勝"
-            elif g.decisions.get("loss") == pid:
-                dec = "敗"
-            elif g.decisions.get("save") == pid:
-                dec = "S"
+            st = stats.get(pid, {})
+            c = st.get("pit", Counter())
             incomplete = any(pa.get("unrecorded") and pa.get("pitcher") == pid for pa in g.pa_log)
             pitchers.append({**(_player(g, pid) or {}), **{k: c[k] for k in PIT_KEYS},
-                             **pitching_rates(c, int(g.rules.get("innings") or 9)),
-                             "decision": dec, "pitches_incomplete": incomplete})
+                             **pitching_rates(c, inn), "decision": st.get("decision"),
+                             "pitches_incomplete": incomplete})
         fielders = []
-        for key, c in g.fld.items():
-            owner = key.split(":pos")[0] if ":pos" in key else g.roster.get(key, {}).get("team")
-            if owner != side:
+        for pid, st in stats.items():
+            if st.get("side") != side or not st["fld"]["G"]:
                 continue
-            fielders.append({"id": key, "name": _fielder_name(g, key), **{k: c[k] for k in FLD_KEYS}})
+            c = st["fld"]
+            fielders.append({"id": pid, "name": g.name(pid),
+                             "positions": "".join(nt.POS_JA[n] for n in st["positions"]),
+                             "order": pos_of.get(pid, 99), **{k: c[k] for k in FLD_KEYS}, **fielding_rates(c)})
+        # 選手が登録されていない守備位置の記録
+        for key, c in g.fld.items():
+            if ":pos" in key and key.split(":pos")[0] == side:
+                fielders.append({"id": key, "name": "（選手未登録）", "positions": nt.POS_JA.get(int(key.split(":pos")[1]), ""), "order": 100,
+                                 **{k: c[k] for k in FLD_KEYS}, **fielding_rates(c)})
+        fielders.sort(key=lambda r: (r["order"], r["name"]))
         out[side] = {
             "batting": rows,
-            "batting_total": {**{k: tot[k] for k in BAT_KEYS}, **batting_rates(tot)},
+            "batting_total": {**{k: tot[k] for k in BAT_KEYS}, **batting_rates(tot), "LOB": g.team_stats[side]["LOB"]},
             "pitching": pitchers,
+            "team_er": g.team_stats[side]["ER"],
             "fielding": fielders,
             "po_unknown": g.team_stats[side]["PO_UNKNOWN"],
         }
@@ -244,20 +300,15 @@ def scorebook(g: Game) -> dict:
 
 
 def career(rows: list[dict]) -> dict:
-    """複数試合の通算成績 rows = [{"bat": Counter, "pit": Counter, "fld": Counter, "innings": int}]"""
+    """複数試合の通算成績 rows = [{"bat": Counter, "pit": Counter, "fld": Counter}]"""
     bat, pit, fld = Counter(), Counter(), Counter()
-    games = 0
-    w = l = 0
     for r in rows:
-        games += 1
         bat.update(r.get("bat") or {})
         pit.update(r.get("pit") or {})
         fld.update(r.get("fld") or {})
-        w += 1 if r.get("decision") == "勝" else 0
-        l += 1 if r.get("decision") == "敗" else 0
     return {
-        "games": games,
+        "games": len(rows),
         "batting": {**{k: bat[k] for k in BAT_KEYS}, **batting_rates(bat)},
-        "pitching": {**{k: pit[k] for k in PIT_KEYS}, **pitching_rates(pit), "W": w, "L": l},
-        "fielding": {k: fld[k] for k in FLD_KEYS},
+        "pitching": {**{k: pit[k] for k in PIT_KEYS}, **pitching_rates(pit)},
+        "fielding": {**{k: fld[k] for k in FLD_KEYS}, **fielding_rates(fld)},
     }

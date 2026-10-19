@@ -6,6 +6,7 @@ import pytest
 
 os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or ("sqlite:///" + os.path.join(tempfile.mkdtemp(), "test.db"))
 os.environ.pop("ADMIN_PASSCODE", None)
+os.environ["ENABLE_FIXTURE"] = "1"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -21,7 +22,7 @@ def client():
 
 
 def _team(c, name):
-    t = c.post("/api/teams", json={"name": name}).json()
+    t = c.post("/api/teams", json={"name": name, "short_name": name[:2]}).json()
     pids = [c.post(f"/api/teams/{t['id']}/players", json={"name": f"{name}{i}", "number": str(i)}).json()["id"]
             for i in range(1, 12)]
     return t["id"], pids
@@ -122,3 +123,33 @@ def test_export(client, game):
 def test_pages_served(client, game):
     for path in ("/", "/teams", "/new", f"/e/{game['tok']}", f"/g/{game['view']}"):
         assert client.get(path).status_code == 200
+
+
+def test_team_requires_short_name(client):
+    r = client.post("/api/teams", json={"name": "略称なし"})
+    assert r.status_code == 422
+
+
+def test_delete_game_and_team(client):
+    a, _ = _team(client, "消す赤")
+    h, _ = _team(client, "消す青")
+    g = client.post("/api/games", json={"date": "2026-11-01", "away_team_id": a, "home_team_id": h}).json()
+    assert client.delete(f"/api/teams/{a}").status_code == 409   # 試合が残っている
+    assert client.delete(f"/api/edit/{g['edit_token']}").status_code == 200
+    assert client.get(f"/api/view/{g['view_token']}").status_code == 404
+    assert client.delete(f"/api/teams/{a}").status_code == 200
+
+
+def test_fixture_teams_removed_with_game(client):
+    r = client.post("/api/admin/import-fixture").json()
+    v = client.get(f"/api/edit/{r['edit_token']}").json()
+    tid = v["game"]["away_team"]["id"]
+    client.delete(f"/api/edit/{r['edit_token']}")
+    assert client.get(f"/api/teams/{tid}").status_code == 404
+
+
+def test_event_history_has_pitch_numbers_and_names(client, game):
+    v = client.get(f"/api/edit/{game['tok']}").json()
+    pitches = [e for e in v["events"] if e["type"] == "pitch"]
+    assert pitches[0]["pitch_no"] == 1 and pitches[0]["pa_no"] == 1
+    assert "batter_name" in pitches[0]["after"]

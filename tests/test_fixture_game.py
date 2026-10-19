@@ -124,12 +124,14 @@ def test_double_play_top4(game):
     pa = [p for p in game.pa_log if p["inning"] == 4 and p["side"] == "away"][-1]
     assert pa["order"] == 6 and pa["outs_on_play"] == 2
     assert "併殺" in pa["label"]
+    assert pa["code"] == "三直併"
 
 
 def test_scorebook_notation(game):
     pa = [p for p in game.pa_log if p["inning"] == 1 and p["side"] == "home"][0]
     assert pa["label"] == "一ゴロ"   # 入力・速報は一ゴロ
-    assert pa["code"] == "3A"       # スコア表示は3A
+    assert pa["code"] == "一ゴロ"   # スコア表示も一ゴロ
+    assert pa["seq"] == "3A"        # 守備の流れ（経過に表示）は3A
 
 
 def test_reference_earned_runs_and_decisions(game):

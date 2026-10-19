@@ -28,11 +28,12 @@ from sqlalchemy.orm import Session
 
 from . import db
 from .engine.core import RESULT_META, Game as EngineGame, RuleError, effective_events, replay
-from .engine.views import career, game_view
+from .engine.views import career, game_view, player_game_stats
 
 STATIC = Path(__file__).parent / "static"
 LOCK_SECONDS = 120  # 入力中の端末が操作しなくなってから、他の端末が書けるようになるまでの秒数
 ADMIN_PASSCODE = os.environ.get("ADMIN_PASSCODE", "")
+ENABLE_FIXTURE = os.environ.get("ENABLE_FIXTURE", "") == "1"  # 検証試合の読み込み（本番では無効）
 NORMAL_TYPES = {"lineup", "pitch", "pa_result", "runner", "sub", "end", "decision"}
 FIX_TYPES = {"void", "correct", "insert"}
 
@@ -102,6 +103,10 @@ def _team_names(game: db.Game) -> dict:
     return {"away": game.away_team.name, "home": game.home_team.name}
 
 
+def _team_short(t: db.Team) -> str:
+    return t.short_name or t.name[:4]
+
+
 def _compute(game: db.Game, events: list[dict], stop_before: str | None = None):
     return replay(events, game.rules or {}, _roster(game), stop_before=stop_before)
 
@@ -109,8 +114,8 @@ def _compute(game: db.Game, events: list[dict], stop_before: str | None = None):
 def _game_info(game: db.Game) -> dict:
     return {
         "id": game.id, "date": game.date, "venue": game.venue, "version": game.version,
-        "away_team": {"id": game.away_team.id, "name": game.away_team.name},
-        "home_team": {"id": game.home_team.id, "name": game.home_team.name},
+        "away_team": {"id": game.away_team.id, "name": game.away_team.name, "short": _team_short(game.away_team)},
+        "home_team": {"id": game.home_team.id, "name": game.home_team.name, "short": _team_short(game.home_team)},
         "view_token": game.view_token, "rules": game.rules,
     }
 
@@ -118,6 +123,17 @@ def _game_info(game: db.Game) -> dict:
 def _roster_lists(game: db.Game) -> dict:
     return {side: [{"id": p.id, "name": p.name, "number": p.number} for p in team.players if p.active]
             for side, team in (("away", game.away_team), ("home", game.home_team))}
+
+
+def _named_after(g: EngineGame, after: dict | None) -> dict | None:
+    """プレー直後の状況に選手名を付ける（1球ごとの詳細表示用）"""
+    if not after:
+        return after
+    out = dict(after)
+    out["bases"] = {str(b): (g.name(pid) if pid else None) for b, pid in (after.get("bases") or {}).items()}
+    out["batter_name"] = g.name(after["batter"]) if after.get("batter") else None
+    out["pitcher_name"] = g.name(after["pitcher"]) if after.get("pitcher") else None
+    return out
 
 
 def _event_history(events: list[dict], g: EngineGame) -> list[dict]:
@@ -129,7 +145,8 @@ def _event_history(events: list[dict], g: EngineGame) -> list[dict]:
     for e in eff:
         d = desc.get(e["id"], {})
         out.append({"id": e["id"], "seq": e["seq"], "type": e["type"], "desc": d.get("desc"),
-                    "inning": d.get("inning"), "half": d.get("half"), "after": d.get("after"),
+                    "inning": d.get("inning"), "half": d.get("half"), "after": _named_after(g, d.get("after")),
+                    "pa_no": d.get("pa_no"), "pitch_no": d.get("pitch_no"), "payload": e.get("payload"),
                     "unconfirmed": d.get("unconfirmed") or (e.get("meta") or {}).get("unconfirmed"),
                     "note": (e.get("meta") or {}).get("note"), "corrected": bool(e.get("corrected_by")),
                     "computed": e["id"] in desc, "author": e.get("author"),
@@ -175,6 +192,7 @@ def _aware(dt):
 
 def _full_view(game: db.Game, events: list[dict], g: EngineGame, halted: dict | None) -> dict:
     v = game_view(g, halted, _team_names(game))
+    v["team_short"] = {"away": _team_short(game.away_team), "home": _team_short(game.home_team)}
     v["events"], v["fix_count"] = _event_history(events, g)
     v["game"] = _game_info(game)
     return v
@@ -192,17 +210,11 @@ def _save_projections(s: Session, game: db.Game, g: EngineGame) -> None:
             rbi=pa.get("rbi", 0), pitches=pa.get("pitches", []), unrecorded=bool(pa.get("unrecorded")),
             unconfirmed=bool(pa.get("unconfirmed"))))
     roster = _roster(game)
-    pids = set(g.bat) | set(g.pit) | {k for k in g.fld if ":pos" not in k}
-    for pid in pids:
+    for pid, st in player_game_stats(g).items():
         if pid not in roster:
             continue
-        dec = None
-        if g.decisions.get("win") == pid:
-            dec = "勝"
-        elif g.decisions.get("loss") == pid:
-            dec = "敗"
-        s.add(db.PlayerGameStat(game_id=game.id, player_id=pid, bat=dict(g.bat.get(pid, {})),
-                                pit=dict(g.pit.get(pid, {})), fld=dict(g.fld.get(pid, {})), decision=dec))
+        s.add(db.PlayerGameStat(game_id=game.id, player_id=pid, bat=dict(st["bat"]), pit=dict(st["pit"]),
+                                fld=dict(st["fld"]), decision=st["decision"]))
     game.summary = {
         "away": g.score("away"), "home": g.score("home"), "status": g.status,
         "inning": g.inning, "half": g.half, "outs": g.outs,
@@ -225,7 +237,7 @@ def _game_by(s: Session, *, edit: str | None = None, view: str | None = None, lo
 # ============================================================ チーム・選手
 class TeamIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    short_name: str | None = None
+    short_name: str = Field(min_length=1, max_length=8)  # 略称（スコアボード用・必須）
 
 
 class PlayerIn(BaseModel):
@@ -237,21 +249,22 @@ class PlayerIn(BaseModel):
 @app.get("/api/health")
 def health(s: Session = Depends(get_session)):
     s.execute(select(1))
-    return {"ok": True, "passcode_required": bool(ADMIN_PASSCODE)}
+    return {"ok": True, "passcode_required": bool(ADMIN_PASSCODE), "fixture": ENABLE_FIXTURE}
 
 
 @app.get("/api/teams")
 def list_teams(s: Session = Depends(get_session)):
     teams = s.scalars(select(db.Team).where(db.Team.is_guest.is_(False)).order_by(db.Team.name)).all()
-    return [{"id": t.id, "name": t.name, "players": len([p for p in t.players if p.active])} for t in teams]
+    return [{"id": t.id, "name": t.name, "short_name": t.short_name,
+             "players": len([p for p in t.players if p.active])} for t in teams]
 
 
 @app.post("/api/teams", dependencies=[Depends(require_passcode)])
 def create_team(body: TeamIn, s: Session = Depends(get_session)):
-    t = db.Team(name=body.name.strip(), short_name=body.short_name)
+    t = db.Team(name=body.name.strip(), short_name=body.short_name.strip())
     s.add(t)
     s.commit()
-    return {"id": t.id, "name": t.name}
+    return {"id": t.id, "name": t.name, "short_name": t.short_name}
 
 
 @app.get("/api/teams/{team_id}")
@@ -259,7 +272,8 @@ def get_team(team_id: str, s: Session = Depends(get_session)):
     t = s.get(db.Team, team_id)
     if not t:
         raise err(404, "チームが見つかりません")
-    return {"id": t.id, "name": t.name,
+    games = s.scalars(select(db.Game.id).where((db.Game.away_team_id == t.id) | (db.Game.home_team_id == t.id))).all()
+    return {"id": t.id, "name": t.name, "short_name": t.short_name, "games": len(games),
             "players": [{"id": p.id, "name": p.name, "number": p.number, "active": p.active} for p in t.players]}
 
 
@@ -269,8 +283,25 @@ def rename_team(team_id: str, body: TeamIn, s: Session = Depends(get_session)):
     if not t:
         raise err(404, "チームが見つかりません")
     t.name = body.name.strip()
+    t.short_name = body.short_name.strip()
     s.commit()
-    return {"id": t.id, "name": t.name}
+    return {"id": t.id, "name": t.name, "short_name": t.short_name}
+
+
+@app.delete("/api/teams/{team_id}", dependencies=[Depends(require_passcode)])
+def delete_team(team_id: str, s: Session = Depends(get_session)):
+    """チームの削除（そのチームの試合が残っている場合は削除できない）"""
+    t = s.get(db.Team, team_id)
+    if not t:
+        raise err(404, "チームが見つかりません")
+    used = s.scalars(select(db.Game.id).where((db.Game.away_team_id == t.id) | (db.Game.home_team_id == t.id))).first()
+    if used:
+        raise err(409, "このチームの試合が残っているため削除できません 先に試合を削除してください")
+    for p in list(t.players):
+        s.delete(p)
+    s.delete(t)
+    s.commit()
+    return {"ok": True}
 
 
 @app.post("/api/teams/{team_id}/players")
@@ -377,6 +408,26 @@ def edit_game(token: str, s: Session = Depends(get_session)):
     v = _full_view(game, events, g, halted)
     v.update({"mode": "edit", "edit_token": token, "roster": _roster_lists(game), "lock": _lock_info(game)})
     return v
+
+
+@app.delete("/api/edit/{token}", dependencies=[Depends(require_passcode)])
+def delete_game(token: str, s: Session = Depends(get_session)):
+    """試合の削除（記録もすべて消える 元に戻せない） 検証用の仮チームも一緒に消す"""
+    game = _game_by(s, edit=token)
+    teams = [game.away_team, game.home_team]
+    for model in (db.GameEvent, db.PlateAppearance, db.PlayerGameStat):
+        s.execute(delete(model).where(model.game_id == game.id))
+    s.delete(game)
+    s.flush()
+    for t in teams:
+        if t.is_guest:
+            left = s.scalars(select(db.Game.id).where((db.Game.away_team_id == t.id) | (db.Game.home_team_id == t.id))).first()
+            if not left:
+                for p in list(t.players):
+                    s.delete(p)
+                s.delete(t)
+    s.commit()
+    return {"ok": True}
 
 
 @app.get("/api/edit/{token}/before/{event_id}")
@@ -533,10 +584,12 @@ def _quote(s: str) -> str:
 # ============================================================ 検証試合の読み込み
 @app.post("/api/admin/import-fixture", dependencies=[Depends(require_passcode)])
 def import_fixture(s: Session = Depends(get_session)):
-    """2026-10-18 Nexus Tokyo vs EDOSEN の検証試合を、新しい試合として登録する"""
+    """2026-10-18 Nexus Tokyo vs EDOSEN の検証試合を、新しい試合として登録する（ENABLE_FIXTURE=1 のときだけ）"""
+    if not ENABLE_FIXTURE:
+        raise err(404, "検証試合の読み込みは無効です")
     from fixtures import nexus_edo_20261018 as fx
-    away = db.Team(name="Nexus Tokyo（検証）", is_guest=True)
-    home = db.Team(name="EDOSEN（検証）", is_guest=True)
+    away = db.Team(name="Nexus Tokyo（検証）", short_name="Nexus", is_guest=True)
+    home = db.Team(name="EDOSEN（検証）", short_name="EDOSEN", is_guest=True)
     s.add_all([away, home])
     s.flush()
     idmap = {}

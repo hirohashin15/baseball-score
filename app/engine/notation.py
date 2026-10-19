@@ -89,7 +89,7 @@ def pa_label(result: str, pos: int | None, extra: dict | None = None) -> str:
     if result == "force_out":
         return f"{p}ゴロ（併殺崩れ）" if p else "封殺の間に出塁"
     if result == "strikeout":
-        return "見逃し三振" if extra.get("looking") else "三振"
+        return "見逃し三振" if extra.get("looking") else "空振り三振"
     if result == "strikeout_dropped":
         return "振り逃げ"
     if result == "walk":
@@ -106,14 +106,14 @@ def pa_label(result: str, pos: int | None, extra: dict | None = None) -> str:
 
 
 def score_code(result: str, pos: int | None, fielders: list[int] | None, extra: dict | None = None) -> str:
-    """スコア表示用の記号（日本語の略記 ゴロは 6-3、単独刺殺は 3A）"""
+    """スコア表示用の短い表記（一ゴロ・中飛・空三振 など） 守備の流れ（6-3など）は経過の方に出す"""
     extra = extra or {}
     p = POS_JA.get(pos or 0, "")
     if result in ("single", "double", "triple", "home_run"):
         mark = {"single": "安", "double": "2", "triple": "3", "home_run": "本"}[result]
         return f"{p}{mark}"
     if result == "ground_out":
-        return _seq(fielders) or f"{p}ゴ"
+        return f"{p}ゴロ"
     if result == "fly_out":
         return f"{p}飛"
     if result == "line_out":
@@ -123,7 +123,7 @@ def score_code(result: str, pos: int | None, fielders: list[int] | None, extra: 
     if result == "infield_fly":
         return f"{p}飛(IF)"
     if result == "sac_bunt":
-        return f"犠{_seq(fielders) or p}"
+        return f"{p}犠打"
     if result == "sac_fly":
         return f"{p}犠飛"
     if result == "reach_on_error":
@@ -131,9 +131,9 @@ def score_code(result: str, pos: int | None, fielders: list[int] | None, extra: 
     if result == "fielders_choice":
         return f"{p}野選"
     if result == "force_out":
-        return f"({_seq(extra.get('runner_fielders')) or p})"
+        return f"{p}併崩"
     if result == "strikeout":
-        return "見三振" if extra.get("looking") else "三振"
+        return "見三振" if extra.get("looking") else "空三振"
     if result == "strikeout_dropped":
         return "振逃"
     if result == "walk":
@@ -144,4 +144,11 @@ def score_code(result: str, pos: int | None, fielders: list[int] | None, extra: 
         return "死球"
     if result == "interference":
         return "打妨"
+    if result == "batter_out_other":
+        return "アウト"
     return "?"
+
+
+def fielding_seq(fielders: list[int] | None) -> str:
+    """守備の流れの文字列（6-4-3 など 1人だけなら 3A）"""
+    return _seq(fielders)

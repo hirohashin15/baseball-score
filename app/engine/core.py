@@ -67,8 +67,8 @@ RBI_RESULTS = {
 }
 # この理由で生還した得点には打点を付けない
 NO_RBI_HOW = {"error", "wp", "pb", "bk", "sb", "obstruction", "po"}
-# この理由で生還した得点は自責点にしない（簡易判定 上書き可）
-UNEARNED_HOW = {"error", "pb", "obstruction"}
+# この理由での進塁は「守備側のミスによる進塁」（自責点の判定で差し引く）
+ERROR_HOW = {"error", "pb", "obstruction"}
 # 3アウト目がこの形なら、同じプレーでの得点は認めない（打者アウト・封殺・帰塁失敗）
 NO_RUN_OUT_HOW = {"force", "doubled_off"}
 
@@ -86,6 +86,7 @@ class Runner:
     unearned: bool = False      # 失策などで出塁＝生還しても自責点にならない
     pa_no: int | None = None    # 出塁した打席の通し番号
     temp_id: str | None = None  # 臨時代走で実際に走っている選手（成績は player_id に付く）
+    err_bases: int = 0          # 失策・捕逸・走塁妨害で進んだ塁の数（自責点の判定用）
 
 
 @dataclass
@@ -160,6 +161,12 @@ class Game:
         self.fld: dict[str, Counter] = defaultdict(Counter)
         self.team_stats = {"away": Counter(), "home": Counter()}
         self.chances = 0  # この回の「失策がなければアウトだった」数（自責点の判定用）
+        self.entry_chances: dict[str, int] = {}  # 回の途中で登板した投手の、登板時点の chances（規則9.16(i)）
+        self.stints: list[dict] = []             # 投手ごとの登板記録（セーブ・ホールドの判定用）
+        self.open_stint: dict[str, dict | None] = {"away": None, "home": None}
+        self.fpos: dict[str, set] = defaultdict(set)  # 守った守備位置（守備の試合数用）
+        self._last_pa_no: int | None = None
+        self._last_pitch_no: int | None = None
         self.decisions: dict[str, Any] = {}
         self.decision_override: dict[str, Any] = {}
         self.notes: list[str] = []  # 判定の注意（画面に出す）
@@ -225,7 +232,10 @@ class Game:
         if handler is None:
             raise RuleError(f"未対応のイベント種類です：{typ}")
         before = self._brief()
+        self._last_pa_no = None
+        self._last_pitch_no = None
         handler(payload)
+        self._mark_fielders()
         after = self._brief()
         # 3アウトで攻守交代した直後は0アウトに戻るため、経過表示用に「このプレー後のアウト数」を別に持つ
         changed = (after["inning"], after["half"]) != (before["inning"], before["half"])
@@ -238,6 +248,8 @@ class Game:
             "inning": before["inning"],
             "half": before["half"],
             "after": after,
+            "pa_no": self._last_pa_no,
+            "pitch_no": self._last_pitch_no,
             "unconfirmed": bool((ev.get("meta") or {}).get("unconfirmed") or payload.get("unconfirmed")),
         })
 
@@ -248,7 +260,19 @@ class Game:
             "bases": {b: (r.player_id if r else None) for b, r in self.bases.items()},
             "score": {"away": self.score("away"), "home": self.score("home")},
             "status": self.status,
+            "batter": self.current_batter()[0] if self.status == "live" else None,
+            "pitcher": self.teams[self.def_side].pitcher if self.status == "live" else None,
         }
+
+    def _mark_fielders(self) -> None:
+        """守備に就いていた選手と位置を記録する（守備の試合数・守備位置別の集計用）"""
+        if self.status != "live":
+            return
+        t = self.teams[self.def_side]
+        for n, pid in t.positions.items():
+            self.fpos[pid].add(n)
+        if t.pitcher:
+            self.fpos[t.pitcher].add(1)
 
     # ------------------------------------------------------------ スタメン
     def _ev_lineup(self, p: dict) -> None:
@@ -310,6 +334,7 @@ class Game:
         while len(self.linescore[side]) < self.inning:
             self.linescore[side].append(0)
         self.chances = 0
+        self.entry_chances = {}
 
     def _ensure_pa(self) -> dict:
         self._start_live()
@@ -332,6 +357,8 @@ class Game:
             }
         if self._cur_event and self._cur_event.get("id") not in self.pa["event_ids"]:
             self.pa["event_ids"].append(self._cur_event.get("id"))
+        self._last_pa_no = self.pa["no"]
+        self._touch_stint()
         return self.pa
 
     def _finish_pa(self, result: str, info: dict) -> None:
@@ -354,6 +381,7 @@ class Game:
         pa = self._ensure_pa()
         pitcher = self.teams[self.def_side].pitcher
         pa["pitches"].append(r)
+        self._last_pitch_no = len(pa["pitches"])
         self.pit[pitcher]["pitches"] += 1
         moves = p.get("runners") or []
         dropped = p.get("dropped")
@@ -547,13 +575,16 @@ class Game:
         }
         label = play.get("label") or nt.pa_label(result, pos, extra)
         code = nt.score_code(result, pos, fielders, extra)
+        seq = list(fielders) if fielders else []
         if summary["outs"] >= 2:
-            # 併殺は守備の流れをつなげて表示（6-4 と 4-3 → 6-4-3）
+            # 併殺は守備の流れをつなげる（6-4 と 4-3 → 6-4-3）
             rf = summary.get("runner_out_fielders")
             if rf and fielders and batter_dest == "out" and meta["kind"] == "ground":
                 seq = list(rf) + (list(fielders)[1:] if rf[-1] == fielders[0] else list(fielders))
-                code = "-".join(str(x) for x in seq)
-            code += " 併" if summary["outs"] == 2 else " 三重"
+            code += "併" if summary["outs"] == 2 else "三重"
+        elif result == "force_out" and summary.get("lead_out_fielders"):
+            seq = list(summary["lead_out_fielders"])
+        seq_text = nt.fielding_seq(seq) if result not in ("strikeout",) else ""
         if summary["outs"] >= 2 and result not in ("strikeout",):
             label += "（併殺）" if summary["outs"] == 2 else "（三重殺）"
         elif result == "strikeout" and summary["outs"] >= 2:
@@ -565,6 +596,7 @@ class Game:
             "code": code,
             "pos": pos,
             "fielders": fielders,
+            "seq": seq_text,
             "rbi": summary["rbi"],
             "runs": summary["runs"],
             "outs_on_play": summary["outs"],
@@ -649,13 +681,21 @@ class Game:
     def _ev_runner(self, p: dict) -> None:
         self._start_live()
         moves = p.get("moves") or []
-        if not moves:
+        if not moves and not p.get("attempt"):
             raise RuleError("走者の動きを入力してください")
         if self.pa is None:
             # 打席が始まる前の走塁でも、打席の記録に結び付ける
             self._ensure_pa()
         elif self._cur_event:
             self.pa["event_ids"].append(self._cur_event.get("id"))
+        self._last_pa_no = self.pa["no"]
+        self._touch_stint()
+        if not moves:
+            # 牽制球（走者はセーフ）：記録として残すだけで状況は変わらない
+            base = p.get("base")
+            if base and self.bases.get(int(base)) is None:
+                raise RuleError(f"{nt.BASE_JA.get(int(base), '')}に走者がいません")
+            return
         hows = {m.get("how") for m in moves}
         if "bk" in hows:
             self.pit[self.teams[self.def_side].pitcher]["BK"] += 1
@@ -669,7 +709,6 @@ class Game:
         dside = self.def_side
         cur_pitcher = self.teams[dside].pitcher
         start_outs = self.outs
-        vo_before = self.outs + self.chances
 
         parsed: dict[int | str, dict] = {}
         for m in moves:
@@ -761,6 +800,15 @@ class Game:
 
         # ---- 守備・走塁の成績
         wp_counted = pb_counted = False
+        catcher = self._fielder(2)
+        if n_outs >= 2:
+            # 併殺（三重殺）に関わった野手それぞれに併殺1を付ける
+            involved = []
+            for frm, r, spec in outs_list:
+                if spec.get("fielders") and not spec.get("fielders_unknown"):
+                    involved += [int(f) for f in spec["fielders"]]
+            for n in dict.fromkeys(involved):
+                self.fld[self._fielder(n)]["DP"] += 1
         for frm, r, spec in entities:
             how = spec["how"]
             if spec["to"] == "out":
@@ -768,9 +816,11 @@ class Game:
                 self._credit_out(spec.get("fielders"), spec.get("fielders_unknown"))
                 if how == "cs":
                     self.bat[r.player_id]["CS"] += 1
+                    self.fld[catcher]["CS_C"] += 1   # 捕手の盗塁刺
                 continue
             if how == "sb" and spec["to"] != frm:
                 self.bat[r.player_id]["SB"] += 1
+                self.fld[catcher]["SB_A"] += 1   # 捕手の許盗塁
             if how == "wp" and not wp_counted and spec["to"] != frm:
                 self.pit[cur_pitcher]["WP"] += 1
                 wp_counted = True
@@ -796,16 +846,16 @@ class Game:
                 continue
             if walkoff_cap and self.score("home") > self.score("away"):
                 break  # サヨナラ：決勝点より後の走者の得点は認めない（本塁打を除く）
-            earned = (not r.unearned) and (vo_before + n_outs < 3) and spec["how"] not in UNEARNED_HOW
+            earned, team_earned = self._earned(r, frm, spec, batter, result, start_outs, n_outs)
             if spec.get("earned") is not None:
-                earned = bool(spec["earned"])
+                earned = team_earned = bool(spec["earned"])
             rbi = False
             if batter is not None:
                 if spec.get("rbi") is not None:
                     rbi = bool(spec["rbi"])
                 else:
                     rbi = self._auto_rbi(result, spec, frm, n_outs, batter)
-            self._score_run(r, earned, rbi, batter["batter"] if (batter and rbi) else None)
+            self._score_run(r, earned, rbi, batter["batter"] if (batter and rbi) else None, team_earned)
             summary["runs"] += 1
             if walkoff_cap and self.score("home") > self.score("away"):
                 summary["walkoff_from"] = frm
@@ -816,6 +866,11 @@ class Game:
             summary["rbi"] = int(rbi_override)
             for run in self.runs_log[-summary["runs"]:] if summary["runs"] else []:
                 run["rbi_batter"] = batter["batter"] if summary["rbi"] else None
+
+        # ---- 失策などで進んだ塁数を走者ごとに積み上げる（後の得点の自責判定に使う）
+        for frm, r, spec in entities:
+            if spec["to"] in (1, 2, 3):
+                r.err_bases += self._error_bases(frm, spec, batter, result)
 
         # ---- 塁の更新
         new_bases: dict[int, Runner | None] = {1: None, 2: None, 3: None}
@@ -829,6 +884,64 @@ class Game:
         if batter is not None and entities[0][1].unearned and entities[0][2]["to"] != "out":
             self.chances += 1
         return summary
+
+    def _error_bases(self, frm: Any, spec: dict, batter: dict | None, result: str | None) -> int:
+        """このプレーで、守備側のミス（失策・捕逸・走塁妨害）によって進んだ塁の数
+
+        記録員の判断が要る部分は「投手に有利（＝自責点が少なくなる側）」に倒す（規則9.16(a)）
+        """
+        to = spec["to"]
+        if to == "out":
+            return 0
+        start = 0 if frm == "B" else int(frm)
+        gained = int(to) - start
+        if gained <= 0:
+            return 0
+        if spec["how"] in ERROR_HOW:
+            return gained
+        if frm == "B" and batter is not None:
+            meta = RESULT_META.get(batter["result"], {})
+            base = meta.get("hit") or (1 if meta.get("batter") != "out" else 0)
+            return max(0, gained - base)  # 安打の塁打数を超えた分は失策での進塁とみなす
+        if result == "reach_on_error":
+            # 失策で打者が出塁したプレーの走者：押し出された1つ分までは失策と無関係
+            forced = 1 if spec["how"] == "force" or self._was_forced(frm) else 0
+            return max(0, gained - forced)
+        return 0
+
+    def _was_forced(self, frm: Any) -> bool:
+        return frm != "B" and int(frm) in self.forced_bases()
+
+    def _earned(self, r: Runner, frm: Any, spec: dict, batter: dict | None, result: str | None,
+                start_outs: int, n_outs: int) -> tuple[bool, bool]:
+        """得点が自責点かどうか（公認野球規則9.16 日本の記録方式：得点した時点で判定）
+
+        戻り値：(投手個人の自責点か, チームの自責点か)
+        ・失策／打撃妨害／捕逸での振り逃げで出塁した走者の得点 → 自責点にしない
+        ・失策がなければ3アウトだった後の得点 → 自責点にしない
+        ・失策などで余分に進んだ走者 → ミスが無かった場合の塁から、このプレーで本塁まで届くときだけ自責点
+        ・回の途中から登板した投手は、登板前の「失策がなければアウト」の恩恵を受けない（規則9.16(i)）
+        """
+        if r.unearned:
+            return False, False
+        # ミスが無かった場合にいたはずの塁（ゴースト）から、このプレーで本塁に届くか
+        start = 0 if frm == "B" else int(frm)
+        ghost = start - r.err_bases
+        err_now = self._error_bases(frm, spec, batter, result) if spec["to"] != "out" else 0
+        adv = (4 - start) - err_now
+        if batter is not None and result in RESULT_META:
+            hit = RESULT_META[result]["hit"]
+            adv = max(adv, 4 if hit == 4 else hit)
+        reach = ghost + adv >= 4
+        team_ok = reach and (start_outs + self.chances + n_outs < 3)
+        pitcher = r.pitcher_id
+        cur = self.teams[self.def_side].pitcher
+        if pitcher and pitcher == cur and pitcher in self.entry_chances:
+            own_chances = self.chances - self.entry_chances[pitcher]
+            pit_ok = reach and (start_outs + own_chances + n_outs < 3)
+        else:
+            pit_ok = team_ok
+        return pit_ok, team_ok
 
     def _auto_rbi(self, result: str | None, spec: dict, frm: Any, n_outs: int, batter: dict) -> bool:
         """打点の自動判定（公認野球規則9.04の基本形 判断が要る場面は手入力で上書き）"""
@@ -853,7 +966,8 @@ class Game:
             if a != last:
                 self.fld[self._fielder(a)]["A"] += 1
 
-    def _score_run(self, r: Runner, earned: bool, rbi: bool, rbi_batter: str | None) -> None:
+    def _score_run(self, r: Runner, earned: bool, rbi: bool, rbi_batter: str | None,
+                   team_earned: bool | None = None) -> None:
         side = self.bat_side
         self.linescore[side][self.inning - 1] = (self.linescore[side][self.inning - 1] or 0) + 1
         self.bat[r.player_id]["R"] += 1
@@ -861,6 +975,21 @@ class Game:
             self.pit[r.pitcher_id]["R"] += 1
             if earned:
                 self.pit[r.pitcher_id]["ER"] += 1
+        if team_earned if team_earned is not None else earned:
+            self.team_stats[self.def_side]["ER"] += 1
+        # セーブ・ホールドの判定用：守備側のリードが消えたか
+        dside = self.def_side
+        lead = self.score(dside) - self.score(side)
+        st = self.open_stint[dside]
+        if st is not None:
+            st["runs_during"] += 1
+            if lead <= 0:
+                st["lead_lost"] = True
+        if r.pitcher_id and (st is None or st["pid"] != r.pitcher_id):
+            # 降板した投手が残した走者が還って、同点・逆転になった
+            for old in self.stints:
+                if old["pid"] == r.pitcher_id and old["side"] == dside and lead <= 0:
+                    old["left_runner_blown"] = True
         self.runs_log.append({
             "side": side, "inning": self.inning, "half": self.half,
             "runner": r.player_id, "pitcher": r.pitcher_id, "earned": earned,
@@ -869,6 +998,39 @@ class Game:
             "def_pitcher": self.teams[self.def_side].pitcher,
             "event_id": (self._cur_event or {}).get("id"),
         })
+
+    # ------------------------------------------------------------ 投手の登板記録（セーブ・ホールド用）
+    def _touch_stint(self) -> None:
+        """守備側の投手が、今の投手として登板記録を持っているか確認し、なければ作る"""
+        dside = self.def_side
+        pid = self.teams[dside].pitcher
+        cur = self.open_stint[dside]
+        if cur is not None and cur["pid"] == pid:
+            return
+        if cur is not None:
+            self._close_stint(dside)
+        st = {
+            "pid": pid, "side": dside, "inning": self.inning,
+            "lead_in": self.score(dside) - self.score(self.bat_side),
+            "runners_in": sum(1 for b in self.bases.values() if b is not None),
+            "outs_at": self.pit[pid]["OUTS"], "outs": 0,
+            "runs_during": 0, "lead_lost": False, "left_runner_blown": False,
+            "lead_out": None, "finished": False,
+        }
+        self.stints.append(st)
+        self.open_stint[dside] = st
+
+    def _close_stint(self, side: str, finished: bool = False) -> None:
+        st = self.open_stint[side]
+        if st is None:
+            return
+        st["outs"] = self.pit[st["pid"]]["OUTS"] - st["outs_at"]
+        if side == self.def_side or "lead_last_def" not in st:
+            st["lead_out"] = self.score(side) - self.score(other(side))
+        else:
+            st["lead_out"] = st["lead_last_def"]  # 攻撃中に交代が記録された場合は、最後に守っていた時点のリード
+        st["finished"] = finished
+        self.open_stint[side] = None
 
     # ------------------------------------------------------------ プレー後の処理
     def _after_play(self) -> None:
@@ -884,6 +1046,9 @@ class Game:
         reg = int(self.rules.get("innings") or 9)
         lob = sum(1 for r in self.bases.values() if r is not None)
         self.team_stats[self.bat_side]["LOB"] += lob
+        st = self.open_stint[self.def_side]
+        if st is not None:
+            st["lead_last_def"] = self.score(self.def_side) - self.score(self.bat_side)
         # 打席途中に3アウト（盗塁死など）→ 打者は打席未完了のまま、次の回の先頭打者になる
         self.pa = None
         self.bases = {1: None, 2: None, 3: None}
@@ -917,6 +1082,8 @@ class Game:
         self.status = "final"
         self.final_reason = reason
         self.pa = None
+        for side in ("away", "home"):
+            self._close_stint(side, finished=True)
         self._compute_decisions()
 
     def _ev_decision(self, p: dict) -> None:
@@ -982,6 +1149,8 @@ class Game:
             old = t.pitcher
             if old == new:
                 raise RuleError("同じ投手です")
+            if self.open_stint[side] is not None and self.open_stint[side]["pid"] == old:
+                self._close_stint(side)
             out_player = p.get("out_player")
             if out_player and out_player in t.slots:
                 replace_slot(out_player, new)
@@ -999,6 +1168,8 @@ class Game:
             t.positions[1] = new
             if new not in t.pitchers_used:
                 t.pitchers_used.append(new)
+            if self.status == "live" and side == self.def_side:
+                self.entry_chances[new] = self.chances
             if self.pa is not None and side == self.def_side:
                 self.pa["prev_pitcher"] = self.pa["pitcher"]
                 self.pa["change_count"] = (self.balls, self.strikes)
@@ -1055,9 +1226,54 @@ class Game:
                 win = max(relievers, key=lambda pid: self.pit[pid]["OUTS"])
                 note.append(f"先発が規定（{need // 3}回）未満のため、救援投手で最も長く投げた投手を勝利投手にしています（記録員の判断で変更可）")
         self.decisions = {"win": win, "loss": loss, "note": " ".join(note)}
+        self.decisions["save"] = self._save_pitcher(win_side, win)
+        self.decisions["holds"] = self._hold_pitchers(win, loss, self.decisions["save"])
         if self.decision_override:
             self.decisions.update(self.decision_override)
             self.decisions["note"] = "手入力で指定"
+
+    @staticmethod
+    def _save_situation(st: dict) -> bool:
+        """登板時にセーブがつく条件の場面か（規則9.19 (c)(1)(2)／(3)は投球回で別判定）"""
+        lead = st["lead_in"]
+        return lead > 0 and (lead <= 3 or lead <= st["runners_in"] + 2)
+
+    def _save_pitcher(self, win_side: str, win: str | None) -> str | None:
+        """セーブ（公認野球規則9.19）：勝ったチームの最後の投手で、勝利投手でなく、条件を満たす"""
+        team_stints = [s for s in self.stints if s["side"] == win_side]
+        if len(team_stints) < 2:
+            return None
+        last = team_stints[-1]
+        if last["pid"] == win or not last["finished"] or last["lead_lost"] or last["lead_in"] <= 0:
+            return None
+        lead = last["lead_in"]
+        ok = (lead <= 3 and last["outs"] >= 3) or (lead <= last["runners_in"] + 2) or last["outs"] >= 9
+        return last["pid"] if ok else None
+
+    def _hold_pitchers(self, win: str | None, loss: str | None, save: str | None) -> list[str]:
+        """ホールド（NPBの記録規定）：勝敗・セーブがつかない救援投手のうち
+        (1) セーブがつく場面で登板し、1アウト以上取り、リードを保って降板
+        (2) 同点で登板し、1アウト以上取り、残した走者も含め無失点で降板（自チームが勝ち越していれば失点してもよい）
+        """
+        holds: list[str] = []
+        firsts = {}
+        for st in self.stints:
+            firsts.setdefault(st["side"], st["pid"])
+        for st in self.stints:
+            pid = st["pid"]
+            if pid in (win, loss, save) or pid == firsts.get(st["side"]) or st["finished"]:
+                continue
+            if st["outs"] < 1 or st["lead_out"] is None:
+                continue
+            ok = False
+            if self._save_situation(st) and not st["lead_lost"] and st["lead_out"] > 0:
+                ok = True
+            elif st["lead_in"] == 0 and not st["left_runner_blown"]:
+                ok = st["runs_during"] == 0 or (st["lead_out"] > 0 and not st["lead_lost"])
+                ok = ok and st["lead_out"] >= 0
+            if ok and pid not in holds:
+                holds.append(pid)
+        return holds
 
     def _defense_outs(self, side: str) -> int:
         return sum(self.pit[pid]["OUTS"] for pid in self.teams[side].pitchers_used)
@@ -1088,15 +1304,18 @@ class Game:
             s = nt.PITCH_LABEL.get(p.get("result"), "投球")
             last = self.pa_log[-1] if self.pa_log and self.pa is None else None
             if last and last.get("event_ids") and last["event_ids"][-1] == (self._cur_event or {}).get("id"):
-                s += f" → {last['label']}"
+                s += f" → {last['label']}" + (f"（{last['seq']}）" if last.get("seq") else "")
             if p.get("runners"):
                 s += "／" + self._moves_text(p["runners"])
             return f"{head} {s}"
         if typ == "pa_result":
             last = self.pa_log[-1] if self.pa_log else None
             who = f"{last['order']}番 {self.name(last['batter'])}" if last else ""
-            return f"{head} {who}：{last['label'] if last else ''}"
+            seq = f"（{last['seq']}）" if last and last.get("seq") else ""
+            return f"{head} {who}：{last['label'] if last else ''}{seq}"
         if typ == "runner":
+            if not p.get("moves") and p.get("attempt"):
+                return f"{head} 牽制（{nt.BASE_JA.get(int(p.get('base') or 1), '')}走者セーフ）"
             return f"{head} {self._moves_text(p.get('moves') or [])}"
         if typ == "sub":
             kind = {"pinch_hitter": "代打", "pinch_runner": "代走", "temp_runner": "臨時代走",
@@ -1115,8 +1334,8 @@ class Game:
             to = m.get("to")
             how = nt.HOW_LABEL.get(m.get("how") or "adv", "")
             fb = nt.BASE_JA.get(int(frm), "") if frm not in ("B", None) else "打者"
-            tb = "アウト" if to == "out" else nt.BASE_JA.get(_norm_to(to), "")
-            parts.append(f"{fb}走者{how}（→{tb}）")
+            tb = "アウト" if to == "out" else nt.BASE_JA.get(_norm_to(to), "") + ("へ" if _norm_to(to) != 4 else "生還")
+            parts.append(f"{fb}走者{how}（{tb}）".replace("本塁生還", "生還"))
         return "、".join(parts)
 
 
