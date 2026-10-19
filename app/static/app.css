@@ -1,0 +1,221 @@
+/* 野球スコア β
+   方針：屋外の日差しでも読める高コントラスト 主役は球場の緑のスコアボードとBSOランプ
+   それ以外は静かに、親指で押しやすい大きさを優先する */
+:root {
+  --board: #1f4d3a;      /* スコアボードの緑 */
+  --board-ink: #f4f7f2;  /* ボードの白文字 */
+  --board-dim: #8fb3a1;
+  --chalk: #f6f7f4;      /* 背景（ライン引きの白に寄せた寒色寄りの白） */
+  --paper: #ffffff;
+  --ink: #17201c;
+  --muted: #5c6b64;
+  --line: #d3dbd6;
+  --lamp-b: #2fa35a;     /* ボールランプ */
+  --lamp-s: #f2c230;     /* ストライクランプ */
+  --lamp-o: #d8432e;     /* アウトランプ */
+  --dirt: #a8642a;       /* 走者・内野の土 */
+  --warn: #b3261e;
+  --warn-bg: #fdecea;
+  --note-bg: #fff6d6;
+  --focus: #1a73e8;
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --tap: 52px;
+  font-size: 16px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --chalk: #0f1613; --paper: #18211d; --ink: #e8eee9; --muted: #9aaba2; --line: #2e3b35;
+    --warn-bg: #3a1d1a; --note-bg: #3a3317;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--chalk); color: var(--ink); }
+body {
+  font-family: "BIZ UDPGothic", "Hiragino Sans", system-ui, sans-serif;
+  line-height: 1.55; -webkit-text-size-adjust: 100%;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+a { color: inherit; }
+.boot { padding: 40px 16px; color: var(--muted); }
+.wrap { max-width: 640px; margin: 0 auto; padding: 0 16px 96px; }
+h1 { font-size: 1.35rem; margin: 20px 0 6px; }
+h2 { font-size: 1.1rem; margin: 26px 0 8px; }
+h3 { font-size: 1rem; margin: 18px 0 6px; }
+p { margin: 6px 0; }
+.muted { color: var(--muted); font-size: .9rem; }
+.num { font-family: "Barlow Condensed", "BIZ UDPGothic", sans-serif; font-variant-numeric: tabular-nums; }
+
+/* ---------- 上部バー ---------- */
+.topbar {
+  position: sticky; top: 0; z-index: 20; background: var(--board); color: var(--board-ink);
+  padding: calc(env(safe-area-inset-top) + 8px) 12px 8px; display: flex; align-items: center; gap: 8px;
+}
+.topbar .title { font-weight: 700; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar button, .topbar a.btnlink {
+  background: transparent; border: 1px solid rgba(255,255,255,.35); color: var(--board-ink);
+  border-radius: var(--radius-s); padding: 6px 10px; text-decoration: none; font-size: .9rem;
+}
+
+/* ---------- スコアボード（主役） ---------- */
+.board { background: var(--board); color: var(--board-ink); padding: 4px 12px 12px; }
+.ls { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.ls th, .ls td { text-align: center; padding: 2px 0; font-size: .95rem; }
+.ls th { color: var(--board-dim); font-weight: 500; font-family: "Barlow Condensed", sans-serif; }
+.ls th:first-child { width: 26%; }
+.ls td.team { text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 6px; }
+.ls td.r { font-size: 1.5rem; font-weight: 700; }
+.ls td.cur { background: rgba(255,255,255,.12); border-radius: 4px; }
+.ls .batting td.team::before { content: "▶ "; color: var(--lamp-s); font-size: .7rem; vertical-align: 2px; }
+.scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.ls-wrap { overflow-x: auto; }
+.ls.many { min-width: 560px; }
+.state { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; gap: 12px; }
+.inning { font-size: 1.6rem; font-weight: 700; font-family: "Barlow Condensed", "BIZ UDPGothic", sans-serif; letter-spacing: .02em; }
+.inning small { font-size: 1rem; margin-left: 2px; }
+.lamps { display: flex; gap: 12px; align-items: center; }
+.lamps b { font-family: "Barlow Condensed", sans-serif; font-size: 1.05rem; color: var(--board-dim); margin-right: 4px; }
+.lamps span { display: inline-flex; gap: 4px; align-items: center; }
+.lamp { width: 15px; height: 15px; border-radius: 50%; background: rgba(255,255,255,.14); display: inline-block; }
+.lamp.on.b { background: var(--lamp-b); box-shadow: 0 0 6px var(--lamp-b); }
+.lamp.on.s { background: var(--lamp-s); box-shadow: 0 0 6px var(--lamp-s); }
+.lamp.on.o { background: var(--lamp-o); box-shadow: 0 0 6px var(--lamp-o); }
+.final-flag { background: var(--board-ink); color: var(--board); font-weight: 700; padding: 2px 10px; border-radius: 4px; }
+
+/* ---------- 打者・走者 ---------- */
+.field { display: grid; grid-template-columns: 132px 1fr; gap: 12px; padding: 12px 16px 4px; align-items: center; }
+.diamond { width: 132px; height: 112px; }
+.diamond .base { fill: var(--paper); stroke: var(--muted); stroke-width: 2; }
+.diamond .base.on { fill: var(--dirt); stroke: var(--dirt); }
+.diamond text { font-size: 11px; fill: var(--ink); font-family: "BIZ UDPGothic", sans-serif; }
+.diamond .path { stroke: var(--line); stroke-width: 2; fill: none; }
+.who { font-size: .95rem; min-width: 0; }
+.who .row { display: flex; gap: 6px; align-items: baseline; margin: 2px 0; }
+.who .role { color: var(--muted); font-size: .8rem; width: 2.4em; flex: none; }
+.who .name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pseq { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 4px; min-height: 22px; }
+.pchip { font-size: .72rem; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; background: var(--paper); }
+.pchip.b { border-color: var(--lamp-b); }
+.pchip.s { border-color: var(--lamp-s); }
+
+/* ---------- 入力ボタン ---------- */
+.pad { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 8px 16px; }
+.pad button, .btn {
+  min-height: var(--tap); border-radius: var(--radius-m); border: 1px solid var(--line);
+  background: var(--paper); font-weight: 700; font-size: 1rem; padding: 6px 8px; touch-action: manipulation;
+}
+.pad button:active, .btn:active { transform: translateY(1px); filter: brightness(.95); }
+.pad .k-ball { border-bottom: 4px solid var(--lamp-b); }
+.pad .k-strike { border-bottom: 4px solid var(--lamp-s); }
+.pad .k-play { background: var(--board); color: var(--board-ink); border-color: var(--board); }
+.pad .k-sub { font-weight: 400; font-size: .92rem; min-height: 46px; }
+.pad .wide { grid-column: span 2; }
+.btn.primary { background: var(--board); border-color: var(--board); color: var(--board-ink); }
+.btn.danger { color: var(--warn); border-color: var(--warn); }
+.btn.block { width: 100%; margin: 8px 0; }
+.btn.small { min-height: 38px; font-size: .9rem; font-weight: 400; padding: 4px 10px; }
+.btn[disabled] { opacity: .45; }
+.row-btns { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.row-btns .btn { flex: 1; }
+
+/* ---------- お知らせ帯 ---------- */
+.banner { margin: 10px 16px 0; padding: 10px 12px; border-radius: var(--radius-m); font-size: .92rem; }
+.banner.warn { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn); }
+.banner.note { background: var(--note-bg); border: 1px solid #e2c766; }
+.banner .btn { margin-top: 8px; }
+
+/* ---------- タブ ---------- */
+.tabs {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 25; display: grid; grid-template-columns: repeat(4, 1fr);
+  background: var(--paper); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom);
+}
+.tabs.three { grid-template-columns: repeat(3, 1fr); }
+.tabs button { background: none; border: 0; min-height: 54px; font-size: .92rem; color: var(--muted); }
+.tabs button.on { color: var(--ink); font-weight: 700; box-shadow: inset 0 3px 0 var(--board); }
+
+/* ---------- 一覧・表 ---------- */
+.list { list-style: none; padding: 0; margin: 8px 0; border-top: 1px solid var(--line); }
+.list li { border-bottom: 1px solid var(--line); }
+.list a, .list .item { display: flex; gap: 10px; align-items: center; padding: 12px 2px; text-decoration: none; min-height: 52px; width: 100%; background: none; border: 0; text-align: left; }
+.list .grow { flex: 1; min-width: 0; }
+.list .score { font-family: "Barlow Condensed", sans-serif; font-size: 1.3rem; font-weight: 700; }
+.tag { display: inline-block; font-size: .72rem; padding: 0 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); margin-left: 4px; vertical-align: 1px; white-space: nowrap; }
+.tag.warn { color: var(--warn); border-color: var(--warn); }
+.tag.note { border-color: #c9a227; color: #8a6d00; }
+.tag.live { color: var(--lamp-o); border-color: var(--lamp-o); }
+.half-head { font-weight: 700; background: var(--chalk); padding: 8px 2px 4px; font-size: .9rem; position: sticky; top: 0; }
+.ev { font-size: .93rem; }
+.ev .item { padding: 10px 2px; }
+.ev.halt { background: var(--warn-bg); }
+.ev.pending { opacity: .5; }
+.ev small { color: var(--muted); display: block; font-size: .78rem; }
+
+table.stats { border-collapse: collapse; font-size: .85rem; width: 100%; white-space: nowrap; }
+table.stats th, table.stats td { padding: 6px 5px; border-bottom: 1px solid var(--line); text-align: right; }
+table.stats th { color: var(--muted); font-weight: 400; position: sticky; top: 0; background: var(--chalk); }
+table.stats td.l, table.stats th.l { text-align: left; }
+table.stats tr.total td { font-weight: 700; border-top: 2px solid var(--ink); }
+table.stats td.name { max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
+table.book td { text-align: center; min-width: 42px; font-size: .8rem; }
+table.book td.cell-multi { line-height: 1.2; }
+
+/* ---------- フォーム ---------- */
+label.f { display: block; margin: 12px 0 4px; font-size: .9rem; color: var(--muted); }
+input[type=text], input[type=date], input[type=number], input[type=password], select {
+  width: 100%; min-height: 46px; border: 1px solid var(--line); border-radius: var(--radius-s);
+  padding: 8px 10px; background: var(--paper); font-size: 16px;
+}
+.check { display: flex; gap: 10px; align-items: center; min-height: 44px; }
+.check input { width: 22px; height: 22px; }
+.lineup-row { display: grid; grid-template-columns: 28px 1fr 88px; gap: 6px; align-items: center; margin: 6px 0; }
+.lineup-row .o { font-weight: 700; text-align: center; font-family: "Barlow Condensed", sans-serif; font-size: 1.2rem; }
+
+/* ---------- 下から出るシート ---------- */
+.sheet-bg { position: fixed; inset: 0; background: rgba(10, 20, 15, .45); z-index: 40; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 41; background: var(--chalk);
+  border-radius: 16px 16px 0 0; max-height: 88vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 6px 16px calc(env(safe-area-inset-bottom) + 16px); max-width: 640px; margin: 0 auto;
+  animation: up .18s ease-out;
+}
+@keyframes up { from { transform: translateY(24px); opacity: .6; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
+.sheet .grab { width: 44px; height: 5px; border-radius: 3px; background: var(--line); margin: 6px auto 8px; }
+.sheet h2 { margin: 6px 0 10px; }
+.sheet .sec { margin: 14px 0 6px; font-size: .88rem; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  min-height: 44px; padding: 6px 12px; border-radius: 22px; border: 1px solid var(--line);
+  background: var(--paper); font-size: .95rem;
+}
+.chip.on { background: var(--board); color: var(--board-ink); border-color: var(--board); font-weight: 700; }
+.chip.out.on { background: var(--lamp-o); border-color: var(--lamp-o); }
+.chip[disabled] { opacity: .35; }
+.sheet-actions { position: sticky; bottom: calc(-16px - env(safe-area-inset-bottom)); background: var(--chalk); padding: 10px 0 4px; display: flex; gap: 8px; }
+.sheet-actions .btn { flex: 1; }
+
+/* 守備位置の選択（球場の配置） */
+.posfield { display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: repeat(4, 50px); gap: 6px; margin: 4px 0; }
+.posfield .chip { border-radius: var(--radius-m); padding: 0; font-weight: 700; }
+.p7 { grid-column: 1; grid-row: 1; } .p8 { grid-column: 3; grid-row: 1; } .p9 { grid-column: 5; grid-row: 1; }
+.p6 { grid-column: 2; grid-row: 2; } .p4 { grid-column: 4; grid-row: 2; }
+.p5 { grid-column: 1; grid-row: 3; } .p1 { grid-column: 3; grid-row: 3; } .p3 { grid-column: 5; grid-row: 3; }
+.p2 { grid-column: 3; grid-row: 4; }
+
+.runner-row { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.runner-row .who2 { font-weight: 700; margin-bottom: 6px; }
+.runner-row .who2 small { font-weight: 400; color: var(--muted); }
+.runner-row .opts { margin-top: 6px; }
+.outcome { margin: 12px 0 4px; padding: 10px 12px; border-radius: var(--radius-m); background: var(--paper); border: 1px solid var(--line); font-size: .95rem; }
+
+#toast {
+  position: fixed; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+  background: var(--ink); color: var(--chalk); padding: 10px 16px; border-radius: 10px; z-index: 60;
+  max-width: calc(100% - 32px); font-size: .92rem; opacity: 0; pointer-events: none; transition: opacity .2s;
+}
+#toast.show { opacity: 1; }
+#toast.err { background: var(--warn); color: #fff; }
+.urlbox { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 8px 10px; word-break: break-all; font-size: .85rem; }

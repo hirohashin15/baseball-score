@@ -1,0 +1,18 @@
+# Render（無料プラン）への公開設定
+# DATABASE_URL には Neon の接続文字列、ADMIN_PASSCODE には管理用パスコードを、Renderの画面で入れる
+services:
+  - type: web
+    name: baseball-score
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_PASSCODE
+        sync: false
