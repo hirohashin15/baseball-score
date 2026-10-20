@@ -17,7 +17,7 @@ BAT_KEYS = ["G", "PA", "AB", "R", "H", "2B", "3B", "HR", "TB", "RBI", "SB", "CS"
             "BB", "IBB", "HBP", "SO", "GIDP", "ROE"]
 PIT_KEYS = ["G", "W", "L", "SV", "HLD", "OUTS", "BF", "pitches", "H", "HR", "BB", "IBB", "HBP", "SO",
             "WP", "BK", "R", "ER"]
-FLD_KEYS = ["G", "PO", "A", "E", "DP", "PB", "SB_A", "CS_C"]
+FLD_KEYS = ["G", "PO", "A", "E", "DP", "PB", "SB_A", "CS_C", "PO_K"]
 
 
 def _rate(n: float, d: float, digits: int = 3) -> str | None:
@@ -131,6 +131,7 @@ def game_view(g: Game, halted: dict | None, team_names: dict | None = None) -> d
                           else [_player(g, x) for x in v] if k == "holds" else v)
                       for k, v in (g.decisions or {}).items()},
         "forced": sorted(g.forced_bases()),
+        "judge": (g.event_log[-1].get("judge") if g.event_log else []) or [],
     }
     return view
 
@@ -278,23 +279,57 @@ def box_score(g: Game) -> dict:
 
 
 def scorebook(g: Game) -> dict:
-    """スコア表（打順 × 回 のマスに記号を入れる）"""
+    """スコア表（打順 × 回 のマスに記号を入れる）
+
+    cells：画面のスコアタブ用の短い表記
+    detail：スコアブック形式の出力用（打者走者がどこまで進んだか、何で進んだか、何番目のアウトか）
+    """
     book: dict[str, Any] = {}
+    innings = max(len(g.linescore["away"]), len(g.linescore["home"]), 1)
     for side in ("away", "home"):
         cells: dict[int, dict[int, list[str]]] = {}
+        detail: dict[int, dict[int, list[dict]]] = {}
+        hits_by_inn: dict[int, int] = {}
         for pa in g.pa_log:
             if pa["side"] != side:
                 continue
             order = pa.get("order") or 0
             mark = pa.get("code") or "?"
             cells.setdefault(order, {}).setdefault(pa["inning"], []).append(mark)
-        innings = max(len(g.linescore["away"]), len(g.linescore["home"]), 1)
+            segs = g.paths.get(pa["no"], [])
+            reached, scored, out_seg = 0, False, None
+            for sg in segs:
+                if sg["out"]:
+                    out_seg = sg
+                else:
+                    reached = max(reached, sg["to"])
+                    if sg["to"] == 4 and not sg.get("no_run"):
+                        scored = True
+            if RESULT_META.get(pa.get("result"), {}).get("hit"):
+                hits_by_inn[pa["inning"]] = hits_by_inn.get(pa["inning"], 0) + 1
+            detail.setdefault(order, {}).setdefault(pa["inning"], []).append({
+                "code": mark, "label": pa.get("label"), "seq": pa.get("seq"), "rbi": pa.get("rbi", 0),
+                "segments": segs, "reached": reached, "scored": scored,
+                "out_no": out_seg["out_no"] if out_seg else None,
+                "out_from": out_seg["from"] if out_seg else None,
+                "unconfirmed": bool(pa.get("unconfirmed")), "unrecorded": bool(pa.get("unrecorded")),
+                "batter": g.name(pa.get("batter")),
+            })
+        names: dict[int, list[str]] = {}
+        for order, pid in g.teams[side].slot_history:
+            names.setdefault(order, [])
+            if g.name(pid) not in names[order]:
+                names[order].append(g.name(pid))
+        n_rows = max(len(g.teams[side].slots), 9)
         book[side] = {
             "innings": innings,
             "rows": [
-                {"order": o, "cells": {str(i): cells.get(o, {}).get(i, []) for i in range(1, innings + 1)}}
-                for o in range(1, max(len(g.teams[side].slots), 9) + 1)
+                {"order": o, "names": names.get(o, []),
+                 "cells": {str(i): cells.get(o, {}).get(i, []) for i in range(1, innings + 1)},
+                 "detail": {str(i): detail.get(o, {}).get(i, []) for i in range(1, innings + 1)}}
+                for o in range(1, n_rows + 1)
             ],
+            "hits_by_inning": {str(i): hits_by_inn.get(i, 0) for i in range(1, innings + 1)},
         }
     return book
 

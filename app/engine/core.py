@@ -167,6 +167,8 @@ class Game:
         self.fpos: dict[str, set] = defaultdict(set)  # 守った守備位置（守備の試合数用）
         self._last_pa_no: int | None = None
         self._last_pitch_no: int | None = None
+        self._judge: list[str] = []           # 直前プレーの記録判定（H=安打 E=失策 FC=野選）スコアボードのランプ用
+        self.paths: dict[int, list[dict]] = defaultdict(list)  # 打席番号 → その打者走者の進塁の記録（スコアブック用）
         self.decisions: dict[str, Any] = {}
         self.decision_override: dict[str, Any] = {}
         self.notes: list[str] = []  # 判定の注意（画面に出す）
@@ -234,6 +236,7 @@ class Game:
         before = self._brief()
         self._last_pa_no = None
         self._last_pitch_no = None
+        self._judge = []
         handler(payload)
         self._mark_fielders()
         after = self._brief()
@@ -250,6 +253,7 @@ class Game:
             "after": after,
             "pa_no": self._last_pa_no,
             "pitch_no": self._last_pitch_no,
+            "judge": list(dict.fromkeys(self._judge)),
             "unconfirmed": bool((ev.get("meta") or {}).get("unconfirmed") or payload.get("unconfirmed")),
         })
 
@@ -814,6 +818,9 @@ class Game:
             if spec["to"] == "out":
                 self.pit[cur_pitcher]["OUTS"] += 1
                 self._credit_out(spec.get("fielders"), spec.get("fielders_unknown"))
+                if frm == "B" and result == "strikeout" and not spec.get("fielders_unknown") \
+                        and spec.get("fielders") and int(spec["fielders"][-1]) == 2:
+                    self.fld[self._fielder(2)]["PO_K"] += 1   # 捕手の刺殺のうち三振によるもの
                 if how == "cs":
                     self.bat[r.player_id]["CS"] += 1
                     self.fld[catcher]["CS_C"] += 1   # 捕手の盗塁刺
@@ -866,6 +873,36 @@ class Game:
             summary["rbi"] = int(rbi_override)
             for run in self.runs_log[-summary["runs"]:] if summary["runs"] else []:
                 run["rbi_batter"] = batter["batter"] if summary["rbi"] else None
+
+        # ---- スコアボードの判定ランプ
+        if batter is not None and RESULT_META.get(result, {}).get("hit"):
+            self._judge.append("H")
+        if result == "fielders_choice" or any(sp["how"] == "fc" and sp["to"] != "out" for f, _r, sp in entities if f != "B"):
+            self._judge.append("FC")
+        if result in ("reach_on_error", "interference") or any(
+                sp["how"] == "error" or (f == "B" and sp.get("error_pos")) for f, _r, sp in entities):
+            self._judge.append("E")
+        # ---- スコアブック用：走者ごとの進塁（どの塁からどこへ、何によって）とアウトの番号
+        by = self.pa["order"] if self.pa else None
+        out_seq = [e for e in entities if e[0] != "B" and e[2]["to"] == "out"] + \
+                  [e for e in entities if e[0] == "B" and e[2]["to"] == "out"]
+        out_no = {id(e[1]): start_outs + i + 1 for i, e in enumerate(out_seq)}
+        for frm, r, spec in entities:
+            if r.pa_no is None:
+                continue
+            start = 0 if frm == "B" else int(frm)
+            to = spec["to"]
+            if to == start:
+                continue
+            seg = {"from": start, "how": spec["how"], "by": by if frm != "B" else None, "inning": self.inning}
+            if to == "out":
+                seg.update({"to": min(start + 1, 4), "out": True, "out_no": out_no.get(id(r)),
+                            "fielders": spec.get("fielders")})
+            else:
+                seg.update({"to": int(to), "out": False})
+                if to == 4 and third_out_blocks and not spec.get("run_counts"):
+                    seg["no_run"] = True
+            self.paths[r.pa_no].append(seg)
 
         # ---- 失策などで進んだ塁数を走者ごとに積み上げる（後の得点の自責判定に使う）
         for frm, r, spec in entities:

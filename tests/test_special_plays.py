@@ -493,3 +493,39 @@ def test_pickoff_attempt_is_logged_without_change():
     t.add("runner", {"moves": [], "attempt": True, "base": 1})
     g = t.ok()
     assert g.bases[1].player_id == "A1" and g.outs == 0
+
+
+# ---------------------------------------------------------------- スコアボードの判定ランプ・スコアブック
+def test_judge_lamps():
+    t = G()
+    t.pa("single", 7)
+    g = t.ok()
+    assert g.event_log[-1]["judge"] == ["H"]
+    t.pa("reach_on_error", 6)
+    assert t.ok().event_log[-1]["judge"] == ["E"]
+    t.pa("fielders_choice", 5, moves=[{"from": 2, "to": 3, "how": "fc"}, {"from": 1, "to": 2, "how": "fc"}])
+    assert "FC" in t.ok().event_log[-1]["judge"]
+
+
+def test_scorebook_paths():
+    from app.engine.views import scorebook
+    t = G()
+    t.pa("single", 7)                                        # 1番 単打
+    t.runner([{"from": 1, "to": 2, "how": "sb"}])            # 盗塁
+    t.pa("ground_out", 6, fielders=[6, 3], moves=[{"from": 2, "to": 3, "how": "adv"}])  # 2番 遊ゴロ 進塁
+    t.pa("single", 8)                                        # 3番 単打で生還
+    g = t.ok()
+    b = scorebook(g)["away"]
+    c1 = b["rows"][0]["detail"]["1"][0]
+    assert c1["scored"] and c1["reached"] == 4
+    hows = [(sg["from"], sg["to"], sg["how"], sg["by"]) for sg in c1["segments"]]
+    assert hows == [(0, 1, "hit", None), (1, 2, "sb", 2), (2, 3, "adv", 2), (3, 4, "adv", 3)]
+    c2 = b["rows"][1]["detail"]["1"][0]
+    assert c2["out_no"] == 1 and c2["code"] == "遊ゴロ"
+
+
+def test_catcher_strikeout_putouts():
+    t = G()
+    t.pa("strikeout"); t.pa("fly_out", 2)
+    g = t.ok()
+    assert g.fld["H8"]["PO"] == 2 and g.fld["H8"]["PO_K"] == 1

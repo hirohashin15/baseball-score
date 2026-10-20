@@ -229,9 +229,17 @@ input[type=text], input[type=date], input[type=number], input[type=password], se
 /* 押した手応え：ボタンが一瞬沈む＋記録後にスコアボードが光る */
 .pad button.pressed { animation: press .25s ease-out; }
 @keyframes press { 0% { transform: scale(.94); filter: brightness(.85); } 100% { transform: none; filter: none; } }
-.board.flash .lamps, .board.flash .ls td.r { animation: glow .6s ease-out; }
-@keyframes glow { 0% { filter: brightness(1.8); } 100% { filter: none; } }
-@media (prefers-reduced-motion: reduce) { .pad button.pressed, .board.flash .lamps, .board.flash .ls td.r { animation: none; } }
+/* 変わったマスだけ光る */
+.board .chg { animation: chg 1.4s ease-out; border-radius: 4px; }
+@keyframes chg { 0% { background: rgba(242,194,48,.55); color: #fff; } 100% { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .pad button.pressed, .board .chg { animation: none; } .board .chg { outline: 2px solid var(--lamp-s); } }
+
+/* 判定ランプ（H＝安打 E＝失策 Fc＝野選） */
+.judge { display: flex; gap: 4px; align-items: center; }
+.jl { font-style: normal; font-family: "Barlow Condensed", sans-serif; font-weight: 700; font-size: .95rem; min-width: 26px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; color: rgba(255,255,255,.28); border: 1px solid rgba(255,255,255,.18); }
+.jl.on { color: #1f1300; background: var(--lamp-s); border-color: var(--lamp-s); box-shadow: 0 0 8px var(--lamp-s); }
+.jl.fc { min-width: 30px; }
+.state { flex-wrap: wrap; }
 #toast.ok { background: var(--board); color: var(--board-ink); font-weight: 700; }
 
 /* スコアボードの回の数字（押すとその回の結果） */
@@ -276,3 +284,39 @@ input[type=text], input[type=date], input[type=number], input[type=password], se
 .lineup-row.pos .o { font-family: "BIZ UDPGothic", sans-serif; font-size: 1rem; }
 .decisions { font-weight: 700; margin-top: 14px; }
 .newopp { border-left: 3px solid var(--line); padding-left: 10px; margin-top: 6px; }
+
+/* ---------- スコアブック形式（印刷用） ---------- */
+.sb-wrap { padding: 12px 16px 40px; }
+.sb-page { margin-bottom: 28px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.sb-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; }
+.sb-head h2 { margin: 6px 0; }
+.sb-head span { font-size: .85rem; color: var(--muted); }
+table.sb { border-collapse: collapse; background: #fff; color: #111; }
+table.sb th, table.sb td { border: 1px solid #555; text-align: center; padding: 0; }
+table.sb th { font-size: .75rem; font-weight: 700; padding: 3px; background: #eef2ef; }
+table.sb td.o, table.sb th.o { width: 24px; font-weight: 700; }
+table.sb td.n, table.sb th.n { min-width: 74px; max-width: 96px; font-size: .75rem; text-align: left; padding: 2px 4px; line-height: 1.3; }
+table.sb td { min-width: 62px; height: 62px; vertical-align: middle; }
+table.sb tfoot td { height: 24px; font-size: .8rem; font-weight: 700; }
+.sbcell { width: 60px; height: 60px; display: inline-block; vertical-align: middle; }
+.sbcell .dia { fill: none; stroke: #bbb; stroke-width: 1; }
+.sbcell .scored { fill: #1f4d3a; }
+.sbcell .run { stroke: #c0392b; stroke-width: 2.6; stroke-linecap: round; }
+.sbcell .lb { font-size: 8px; fill: #c0392b; font-weight: 700; }
+.sbcell .x { font-size: 11px; fill: #c0392b; font-weight: 700; }
+.sbcell .cd { font-size: 10px; fill: #111; font-weight: 700; }
+.sbcell .cd.sm { font-size: 9px; }
+.sbcell.is-run .cd { fill: #fff; }
+.sbcell .oc { fill: #fff; stroke: #111; stroke-width: 1; }
+.sbcell .on { font-size: 8px; fill: #111; font-weight: 700; }
+.sbcell .rbi { font-size: 6px; fill: #111; }
+.sbcell .q { font-size: 9px; fill: #b3261e; font-weight: 700; }
+@media print {
+  @page { size: A4 landscape; margin: 8mm; }
+  html, body, #app { background: #fff !important; padding: 0; }
+  .topbar, .no-print, .tabs, #toast { display: none !important; }
+  .sb-wrap { padding: 0; }
+  .sb-page { page-break-after: always; overflow: visible; }
+  .sb-page:last-child { page-break-after: auto; }
+  .sb-head span { color: #333; }
+}

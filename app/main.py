@@ -638,7 +638,7 @@ def page_home():
 
 @app.get("/{kind}/{rest:path}")
 def page_any(kind: str, rest: str):
-    if kind in ("e", "g", "p", "teams", "new", "t"):
+    if kind in ("e", "g", "p", "s", "teams", "new", "t"):
         return _index()
     raise HTTPException(status_code=404, detail="ページが見つかりません")
 

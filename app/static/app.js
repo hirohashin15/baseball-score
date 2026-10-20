@@ -157,6 +157,7 @@ function route() {
   if (parts[0] === "e" && parts[1]) return Editor.start(parts[1]);
   if (parts[0] === "g" && parts[1]) return Viewer.start(parts[1]);
   if (parts[0] === "p" && parts[1]) return pagePlayer(parts[1]);
+  if (parts[0] === "s" && parts[1]) return pageScorebook(parts[1]);
   if (parts[0] === "t" && parts[1]) return pageTeam(parts[1]);
   if (parts[0] === "teams") return pageTeams();
   if (parts[0] === "new") return pageNew();
@@ -394,42 +395,70 @@ function shareSheet(editToken, viewToken, after) {
 
 // ================================================================ スコアボード・走者の表示（入力・閲覧で共通）
 function shortName(v, side) { return (v.team_short && v.team_short[side]) || v.team_names[side]; }
-function boardHtml(v, flash = false) {
+// スコアボードの各マスの値（前回と比べて変わったところだけ光らせる）
+function boardKeys(v) {
+  const k = {};
+  if (!v) return k;
+  for (const side of ["away", "home"]) {
+    v.linescore[side].forEach((x, i) => { k[`ls-${side}-${i + 1}`] = x; });
+    k[`R-${side}`] = v.rhe[side].R; k[`H-${side}`] = v.rhe[side].H; k[`E-${side}`] = v.rhe[side].E;
+  }
+  k.B = v.balls; k.S = v.strikes; k.O = v.outs; k.J = (v.judge || []).join(",") + "@" + (v.game?.version ?? "");
+  k.inn = `${v.inning}${v.half}${v.status}`;
+  return k;
+}
+function boardDiff(prev, cur) {
+  if (!prev) return new Set();
+  const a = boardKeys(prev), b = boardKeys(cur);
+  const out = new Set();
+  for (const key of Object.keys(b)) if (a[key] !== b[key]) out.add(key);
+  if (out.has("J") && !(cur.judge || []).length) out.delete("J");
+  return out;
+}
+function boardHtml(v, changed = new Set()) {
   const inn = Math.max(v.linescore.away.length, v.linescore.home.length, v.rules.innings || 9);
   const cols = Array.from({ length: inn }, (_, i) => i + 1);
+  const chg = key => changed.has(key) ? " chg" : "";
   const row = side => {
     const cells = cols.map(i => {
       const val = v.linescore[side][i - 1];
       const cur = v.status === "live" && i === v.inning && v.batting_side === side;
       const txt = val === null ? "×" : val === undefined ? "" : val;
       const can = val !== undefined && val !== null;
-      return `<td class="num${cur ? " cur" : ""}">${can ? `<button class="cell" data-inn="${i}" data-side="${side}" aria-label="${i}回${side === "away" ? "表" : "裏"}の結果">${txt}</button>` : txt}</td>`;
+      return `<td class="num${cur ? " cur" : ""}${chg(`ls-${side}-${i}`)}">${can ? `<button class="cell" data-inn="${i}" data-side="${side}" aria-label="${i}回${side === "away" ? "表" : "裏"}の1球ごとの記録">${txt}</button>` : txt}</td>`;
     }).join("");
-    return `<tr class="${v.status === "live" && v.batting_side === side ? "batting" : ""}"><td class="team">${esc(shortName(v, side))}</td>${cells}<td class="num r">${v.rhe[side].R}</td><td class="num">${v.rhe[side].H}</td><td class="num">${v.rhe[side].E}</td></tr>`;
+    return `<tr class="${v.status === "live" && v.batting_side === side ? "batting" : ""}"><td class="team">${esc(shortName(v, side))}</td>${cells}<td class="num r${chg(`R-${side}`)}">${v.rhe[side].R}</td><td class="num${chg(`H-${side}`)}">${v.rhe[side].H}</td><td class="num${chg(`E-${side}`)}">${v.rhe[side].E}</td></tr>`;
   };
   const lamps = (n, k, max) => Array.from({ length: max }, (_, i) => `<i class="lamp ${k}${i < n ? " on" : ""}"></i>`).join("");
   const state = v.status === "final" ? `<span class="final-flag">試合終了</span>`
     : v.status === "pregame" ? `<span class="inning">開始前</span>`
-      : `<span class="inning">${v.inning}<small>回${halfJa(v.half)}</small></span>`;
-  return `<section class="board${flash ? " flash" : ""}" aria-label="スコアボード">
+      : `<span class="inning${chg("inn")}">${v.inning}<small>回${halfJa(v.half)}</small></span>`;
+  const j = new Set(v.judge || []);
+  const judge = v.status !== "pregame" ? `<div class="judge${chg("J")}" aria-label="直前のプレーの判定 ${[...j].map(x => ({ H: "安打", E: "失策", FC: "野選" }[x])).join(" ") || "なし"}">
+      <i class="jl${j.has("H") ? " on" : ""}">H</i><i class="jl${j.has("E") ? " on" : ""}">E</i><i class="jl fc${j.has("FC") ? " on" : ""}">Fc</i></div>` : "";
+  return `<section class="board" aria-label="スコアボード">
     <div class="ls-wrap"><table class="ls${inn > 9 ? " many" : ""}"><thead><tr><th></th>${cols.map(i => `<th>${i}</th>`).join("")}<th>R</th><th>H</th><th>E</th></tr></thead>
     <tbody>${row("away")}${row("home")}</tbody></table></div>
-    <div class="state">${state}${v.status === "live" ? `<div class="lamps" aria-label="ボール${v.balls} ストライク${v.strikes} アウト${v.outs}">
-      <span><b>B</b>${lamps(v.balls, "b", 3)}</span><span><b>S</b>${lamps(v.strikes, "s", 2)}</span><span><b>O</b>${lamps(v.outs, "o", 2)}</span></div>` : ""}</div>
+    <div class="state">${state}${judge}${v.status === "live" ? `<div class="lamps" aria-label="ボール${v.balls} ストライク${v.strikes} アウト${v.outs}">
+      <span class="${chg("B").trim()}"><b>B</b>${lamps(v.balls, "b", 3)}</span><span class="${chg("S").trim()}"><b>S</b>${lamps(v.strikes, "s", 2)}</span><span class="${chg("O").trim()}"><b>O</b>${lamps(v.outs, "o", 2)}</span></div>` : ""}</div>
   </section>`;
 }
-function bindBoard(v) {
-  $app.querySelectorAll(".board .cell").forEach(b => b.onclick = () => halfInningSheet(v, parseInt(b.dataset.inn, 10), b.dataset.side));
+function bindBoard(v, ed = null) {
+  $app.querySelectorAll(".board .cell").forEach(b => b.onclick = () => halfInningSheet(v, parseInt(b.dataset.inn, 10), b.dataset.side, ed));
 }
-function halfInningSheet(v, inning, side) {
+// スコアボードの回を押したとき：その回の1球ごとの記録（入力画面ではそれぞれ修正できる）
+function halfInningSheet(v, inning, side, ed = null) {
   const half = side === "away" ? "top" : "bottom";
   const pas = v.pa_log.filter(p => p.inning === inning && p.side === side);
   const runs = v.linescore[side][inning - 1] || 0;
+  const filter = e => e.inning === inning && e.half === half && e.type !== "lineup";
   openSheet(`<h2>${inning}回${halfJa(half)} ${esc(v.team_names[side])}</h2>
-    <p class="muted">${runs}点${pas.length ? ` ／ ${pas.length}打席` : ""}</p>
-    <ul class="list">${pas.map(p => `<li class="ev"><div class="item"><span class="grow">${p.order}番 ${esc(p.batter?.name || "")}：<b>${esc(p.label)}</b>${p.rbi ? ` <span class="tag">${p.rbi}打点</span>` : ""}${p.unconfirmed ? ' <span class="tag note">未確認</span>' : ""}
-      <small>${p.pitches.length ? p.pitches.map(x => PITCH_SHORT[x] || "?").join(" ") : (p.unrecorded ? "投球未記録" : "")}${p.seq ? " ／ " + esc(p.seq) : ""}</small></span></div></li>`).join("") || `<li class="ev"><div class="item">記録がありません</div></li>`}</ul>
-    <div class="sheet-actions"><button class="btn" data-a="c">閉じる</button></div>`, el => { el.querySelector("[data-a=c]").onclick = closeSheet; });
+    <p class="muted">${runs}点${pas.length ? ` ／ ${pas.length}打席` : ""}${ed ? " ／ 1球を押すと修正できます" : " ／ 1球を押すと詳細が見られます"}</p>
+    ${eventsHtml(v, !!ed, filter, true)}
+    <div class="sheet-actions"><button class="btn" data-a="c">閉じる</button></div>`, el => {
+    el.querySelector("[data-a=c]").onclick = closeSheet;
+    el.querySelectorAll("[data-ev]").forEach(b => b.onclick = () => eventDetailSheet(ed ? ed.v : v, b.dataset.ev, ed, () => halfInningSheet(ed ? ed.v : v, inning, side, ed)));
+  });
 }
 function diamondHtml(v) {
   const b = v.bases;
@@ -463,7 +492,7 @@ function eventLine(e) {
   if (e.type === "pa_result" && body.includes("：")) return "結果のみ：" + body.split("：").slice(1).join("：");
   return body;
 }
-function eventsHtml(v, editable) {
+function eventsHtml(v, editable, filter = null, oldestFirst = false) {
   const halt = v.halted;
   const pending = new Set(halt ? halt.pending.slice(1) : []);
   const paMap = {};
@@ -471,6 +500,7 @@ function eventsHtml(v, editable) {
   // 打席ごとにまとめる（打席に属さない交代などはそのまま）
   const groups = [];
   for (const e of v.events) {
+    if (filter && !filter(e)) continue;
     const isPending = halt && (halt.event_id === e.id || pending.has(e.id));
     const key = isPending ? "pending" : e.pa_no ? "pa" + e.pa_no : "x" + e.id;
     let g = groups.length && groups[groups.length - 1].key === key ? groups[groups.length - 1] : null;
@@ -478,7 +508,7 @@ function eventsHtml(v, editable) {
     g.items.push(e);
   }
   let html = "", lastHead = "";
-  for (const g of groups.reverse()) {
+  for (const g of (oldestFirst ? groups : groups.reverse())) {
     const e0 = g.first;
     const head = g.pending ? "要確認・未計算の記録" : e0.inning ? `${e0.inning}回${halfJa(e0.half)}` : "試合前";
     if (head !== lastHead) { html += `<li class="half-head">${head}</li>`; lastHead = head; }
@@ -514,7 +544,7 @@ function stateHtml(a) {
     ${a.batter_name ? `<div class="muted">次の打者：${esc(a.batter_name)} ／ 投手：${esc(a.pitcher_name || "")}</div>` : ""}
   </div>`;
 }
-function eventDetailSheet(v, id, ed = null) {
+function eventDetailSheet(v, id, ed = null, onBack = null) {
   const e = v.events.find(x => x.id === id);
   if (!e) return;
   const halt = v.halted;
@@ -532,8 +562,10 @@ function eventDetailSheet(v, id, ed = null) {
     <p class="muted">${e.inning ? `${e.inning}回${halfJa(e.half)} ` : ""}${e.author ? `入力：${esc(e.author)}` : ""}</p>
     ${e.after ? `<p class="sec">このプレーの直後</p>${stateHtml(e.after)}` : ""}
     ${actions}
-    <div class="sheet-actions"><button class="btn" data-a="c">閉じる</button></div>`, el => {
+    <div class="sheet-actions">${onBack ? `<button class="btn" data-a="back">回の一覧に戻る</button>` : ""}<button class="btn" data-a="c">閉じる</button></div>`, el => {
     el.querySelector("[data-a=c]").onclick = closeSheet;
+    const bk = el.querySelector("[data-a=back]");
+    if (bk) bk.onclick = onBack;
     if (!ed) return;
     el.querySelectorAll("[data-pt]").forEach(b => b.onclick = () => {
       if (b.dataset.pt === p.result) return;
@@ -581,8 +613,9 @@ function fieldingHtml(v) {
       <p class="sec muted">野手</p>
       <div class="scroll-x"><table class="stats"><thead><tr><th class="l">選手</th><th class="l">位置</th>${fc.map(c => `<th>${c[1]}</th>`).join("")}<th>守備率</th></tr></thead>
       <tbody>${b.fielding.map(r => `<tr><td class="l name">${esc(r.name)}</td><td class="l">${esc(r.positions)}</td>${fc.map(c => `<td>${r[c[0]]}</td>`).join("")}<td>${r.FPCT ?? "-"}</td></tr>`).join("")}</tbody></table></div>
-      ${catchers.length ? `<p class="sec muted">捕手</p><div class="scroll-x"><table class="stats"><thead><tr><th class="l">捕手</th><th>捕逸</th><th>許盗塁</th><th>盗塁刺</th><th>阻止率</th></tr></thead>
-      <tbody>${catchers.map(r => `<tr><td class="l name">${esc(r.name)}</td><td>${r.PB}</td><td>${r.SB_A}</td><td>${r.CS_C}</td><td>${r.CS_PCT ?? "-"}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${catchers.length ? `<p class="sec muted">捕手</p><div class="scroll-x"><table class="stats"><thead><tr><th class="l">捕手</th><th>刺殺</th><th>うち三振</th><th>捕逸</th><th>許盗塁</th><th>盗塁刺</th><th>阻止率</th></tr></thead>
+      <tbody>${catchers.map(r => `<tr><td class="l name">${esc(r.name)}</td><td>${r.PO}</td><td>${r.PO_K}</td><td>${r.PB}</td><td>${r.SB_A}</td><td>${r.CS_C}</td><td>${r.CS_PCT ?? "-"}</td></tr>`).join("")}</tbody></table></div>
+      <p class="muted">三振のアウトは捕手の刺殺として記録されます（公認野球規則9.09）</p>` : ""}
       ${b.po_unknown ? `<p class="muted">守備者が未確認のアウト：${b.po_unknown}（刺殺・補殺に数えていません）</p>` : ""}`;
   };
   const unrec = v.pa_log.some(p => p.unrecorded) ? `<p class="muted">球数の「+」は、投球を記録していない打席があることを表します</p>` : "";
@@ -600,7 +633,7 @@ function bookHtml(v) {
       ${bk.rows.map(r => `<tr><td class="l">${r.order}</td><td class="l name">${esc(names[r.order] || "")}</td>${cols.map(i => `<td class="${(r.cells[i] || []).length > 1 ? "cell-multi" : ""}">${(r.cells[i] || []).map(esc).join("<br>")}</td>`).join("")}</tr>`).join("")}
     </tbody></table></div>`;
   };
-  return `<div class="wrap">${team("away")}${team("home")}<p class="muted">左安・中2・右3・左本＝安打・二塁打・三塁打・本塁打と方向、空三振・見三振＝空振り・見逃しの三振、併＝併殺、併崩＝併殺崩れ 守備の流れ（6-3など）は経過に出ます</p></div>`;
+  return `<div class="wrap"><a class="btn block" style="display:flex;align-items:center;justify-content:center;text-decoration:none;margin-top:14px" href="/s/${esc(v.game.view_token)}" data-link>スコアブック形式で表示（印刷・PDF保存）</a>${team("away")}${team("home")}<p class="muted">左安・中2・右3・左本＝安打・二塁打・三塁打・本塁打と方向、空三振・見三振＝空振り・見逃しの三振、併＝併殺、併崩＝併殺崩れ 守備の流れ（6-3など）は経過に出ます</p></div>`;
 }
 
 // ================================================================ 閲覧画面
@@ -617,16 +650,16 @@ const Viewer = {
     if (document.hidden || $sheetRoot.innerHTML) return;
     try {
       const r = await api(`/api/view/${this.token}?since=${this.v.game.version}`);
-      if (!r.unchanged) { this.v = r; this.render(true); }
+      if (!r.unchanged) { const prev = this.v; this.v = r; this.render(boardDiff(prev, r)); }
     } catch { /* 次回また試す */ }
   },
-  render(flash = false) {
+  render(changed = new Set()) {
     const v = this.v;
     const latest = [...v.pa_log].reverse()[0];
     const body = this.tab === "play"
       ? `<div class="field">${diamondHtml(v)}${whoHtml(v)}</div>${latest ? `<div class="banner note">直前の打席：${latest.order}番 ${esc(latest.batter?.name || "")} <b>${esc(latest.label)}</b></div>` : ""}<div class="wrap"><p class="muted" style="margin-top:12px">1球ごとの記録を押すと、その時点の状況が見られます スコアボードの数字を押すと、その回の結果が見られます</p>${eventsHtml(v, false)}</div>`
       : this.tab === "bat" ? battingHtml(v) : this.tab === "fld" ? fieldingHtml(v) : bookHtml(v);
-    $app.innerHTML = topbar(`${v.team_names.away} 対 ${v.team_names.home}`) + boardHtml(v, flash) + body +
+    $app.innerHTML = topbar(`${v.team_names.away} 対 ${v.team_names.home}`) + boardHtml(v, changed) + body +
       `<nav class="tabs">${[["play", "速報"], ["bat", "打撃"], ["fld", "守備"], ["book", "スコア"]].map(([k, l]) => `<button class="${this.tab === k ? "on" : ""}" data-tab="${k}">${l}</button>`).join("")}</nav>`;
     bindTopbar(); bindBoard(v);
     $app.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { this.tab = b.dataset.tab; this.render(); window.scrollTo(0, 0); });
@@ -636,7 +669,7 @@ const Viewer = {
 
 // ================================================================ 入力画面
 const Editor = {
-  token: null, v: null, tab: "input", mode: null, mv: null, busy: false, _flash: false,
+  token: null, v: null, tab: "input", mode: null, mv: null, busy: false, _changed: new Set(),
 
   async start(token) {
     this.token = token; this.tab = "input"; this.mode = null; this.mv = null; this._lineupSide = null; this._draft = {}; this._luMode = "order";
@@ -705,11 +738,11 @@ const Editor = {
         method: "POST",
         body: { ...body, client_id: clientId(), author: store.get("bs_name"), expected_version: this.v.game.version },
       });
+      this._changed = boardDiff(this.v, v);
       this.v = v; this.mode = null; this.mv = null;
       closeSheet();
-      this._flash = true;
       this.render();
-      this._flash = false;
+      this._changed = new Set();
       if (v.halted) setTimeout(() => toast("後のプレーと矛盾があります 経過の「要確認」を直してください", "err"), 1600);
       return v;
     } catch (e) {
@@ -733,8 +766,9 @@ const Editor = {
     const ok = await confirmSheet("1つ前に戻す", `「${esc(last.desc ? eventLine(last) : typeJa(last.type))}」を取り消します 記録は履歴に残り、後から戻せます`, "取り消す", true);
     if (!ok) return;
     try {
-      this.v = await api(`/api/edit/${this.token}/undo`, { method: "POST", body: { client_id: clientId(), author: store.get("bs_name"), expected_version: this.v.game.version } });
-      toast("✓ 取り消しました", "ok"); this.render();
+      const nv = await api(`/api/edit/${this.token}/undo`, { method: "POST", body: { client_id: clientId(), author: store.get("bs_name"), expected_version: this.v.game.version } });
+      this._changed = boardDiff(this.v, nv); this.v = nv;
+      toast("✓ 取り消しました", "ok"); this.render(); this._changed = new Set();
     } catch (e) { if (e.status === 409) await this.reload(); showError(e); }
   },
   async enterMode(kind, target, desc) {
@@ -773,9 +807,9 @@ const Editor = {
     else if (this.tab === "bat") body = battingHtml(this.v);
     else if (this.tab === "fld") body = fieldingHtml(this.v);
     else body = bookHtml(this.v);
-    $app.innerHTML = topbar(`${this.v.team_names.away} 対 ${this.v.team_names.home}`, menu) + boardHtml(v, this._flash) + banners + body +
+    $app.innerHTML = topbar(`${this.v.team_names.away} 対 ${this.v.team_names.home}`, menu) + boardHtml(v, this.mode ? new Set() : this._changed) + banners + body +
       `<nav class="tabs five">${[["input", "入力"], ["log", "経過"], ["bat", "打撃"], ["fld", "守備"], ["book", "スコア"]].map(([k, l]) => `<button class="${this.tab === k ? "on" : ""}" data-tab="${k}">${l}</button>`).join("")}</nav>`;
-    bindTopbar(); bindBoard(this.v);
+    bindTopbar(); bindBoard(this.v, this);
     $app.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { this.tab = b.dataset.tab; this.render(); window.scrollTo(0, 0); });
     const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
     on("menu", () => this.menuSheet());
@@ -1077,7 +1111,12 @@ const ResultSheet = {
   open(ed, kind) {
     this.ed = ed; this.kind = kind;
     this.st = { cat: kind === "pa" ? "kbb" : "hit", ui: null, pos: null, moves: null, fielders: "", rbi: null, unconfirmed: false };
+    this.hist = [];
     this.draw();
+  },
+  // 1つ戻る：操作のたびに直前の状態を積んでおき、押されたら1つ前に戻す
+  push(el) { this.keepInputs(el); this.hist.push(JSON.stringify(this.st)); },
+  back() { if (!this.hist.length) return; this.st = JSON.parse(this.hist.pop()); this.redrawKeepScroll(); 
   },
   engineResult(ui) { return { ground_dp: "ground_out", reach_on_error_g: "reach_on_error", strikeout_l: "strikeout" }[ui] || ui; },
   defaultFielders(ui, pos) {
@@ -1120,7 +1159,7 @@ const ResultSheet = {
         <div class="posgrid">${[7, 8, 9, 5, 6, 4, 3, 1, 2].map(n => `<button class="pos-btn ${s.pos === n ? "on" : ""}" data-pos="${n}">${POS_JA[n]}<small>${n}</small></button>`).join("")}</div>` : ""}
       <div id="runners-anchor"></div>
       ${s.moves ? summary + this.runnersHtml(v) : ""}
-      <div class="sheet-actions"><button class="btn" data-a="c">やめる</button><button class="btn primary" data-a="ok" ${ready ? "" : "disabled"}>記録する</button></div>`, el => {
+      <div class="sheet-actions"><button class="btn" data-a="back" ${this.hist.length ? "" : "disabled"}>1つ戻る</button><button class="btn" data-a="c">やめる</button><button class="btn primary" data-a="ok" ${ready ? "" : "disabled"}>記録する</button></div>`, el => {
       this.bind(el);
       if (scrollToRunners) { const a = el.querySelector("#runners-anchor"); if (a) a.scrollIntoView({ block: "start", behavior: "smooth" }); }
     });
@@ -1160,33 +1199,39 @@ const ResultSheet = {
   bind(el) {
     const s = this.st;
     el.querySelector("[data-a=c]").onclick = closeSheet;
-    el.querySelectorAll("[data-cat]").forEach(b => b.onclick = () => { s.cat = b.dataset.cat; s.ui = null; s.pos = null; s.moves = null; this.draw(); });
+    el.querySelector("[data-a=back]").onclick = () => this.back();
+    el.querySelectorAll("[data-cat]").forEach(b => b.onclick = () => { if (b.dataset.cat === s.cat) return; this.push(el); s.cat = b.dataset.cat; s.ui = null; s.pos = null; s.moves = null; this.draw(); });
     el.querySelectorAll("[data-ui]").forEach(b => b.onclick = async () => {
+      if (b.dataset.ui === s.ui) return;
+      this.push(el);
       s.ui = b.dataset.ui; s.moves = null; s.rbi = null;
       if (!NEEDS_POS.has(s.ui)) s.pos = null;
       await this.loadMoves(); this.draw(!!s.moves);
     });
-    el.querySelectorAll("[data-pos]").forEach(b => b.onclick = async () => { s.pos = parseInt(b.dataset.pos, 10); await this.loadMoves(); this.draw(true); });
+    el.querySelectorAll("[data-pos]").forEach(b => b.onclick = async () => { if (parseInt(b.dataset.pos, 10) === s.pos) return; this.push(el); s.pos = parseInt(b.dataset.pos, 10); await this.loadMoves(); this.draw(true); });
     el.querySelectorAll("[data-m]").forEach(b => b.onclick = () => {
       const from = b.dataset.m === "B" ? "B" : parseInt(b.dataset.m, 10);
       const to = b.dataset.to === "out" ? "out" : parseInt(b.dataset.to, 10);
+      this.push(el);
       const m = s.moves.find(x => x.from === from);
       m.to = to;
       if (from !== "B") m.how = to === "out" ? "force" : (m.how && !["force", "tag", "doubled_off"].includes(m.how) ? m.how : "adv");
       this.keepInputs(el); this.redrawKeepScroll();
     });
     el.querySelectorAll("[data-h]").forEach(b => b.onclick = () => {
+      this.push(el);
       const m = s.moves.find(x => x.from === parseInt(b.dataset.h, 10)); m.how = b.dataset.how; this.keepInputs(el); this.redrawKeepScroll();
     });
     const rbi = el.querySelector("[data-a=rbi]");
     if (rbi) rbi.onclick = async () => {
       this.keepInputs(el);
       const val = await askText("打点", "空欄にすると自動計算に戻します", s.rbi ?? "", "number");
+      if (val !== null) this.hist.push(JSON.stringify(s));
       if (val !== null) s.rbi = val === "" ? null : Math.max(0, parseInt(val, 10) || 0);
       this.draw(true);
     };
     const unc = el.querySelector("[data-a=unc]");
-    if (unc) unc.onclick = () => { this.keepInputs(el); s.unconfirmed = !s.unconfirmed; this.redrawKeepScroll(); };
+    if (unc) unc.onclick = () => { this.push(el); s.unconfirmed = !s.unconfirmed; this.redrawKeepScroll(); };
     el.querySelector("[data-a=ok]").onclick = () => { this.keepInputs(el); this.submit(); };
   },
   redrawKeepScroll() {
@@ -1238,6 +1283,7 @@ const RunnerSheet = {
     this.ed = ed;
     const v = ed.view;
     this.st = { mode, pitch, fixedPitch: !!pitch, moves: {} };
+    this.hist = [];
     const how = mode === "wild" ? "wp" : "sb";
     for (const b of [1, 2, 3]) if (v.bases[b]) this.st.moves[b] = { to: mode === "wild" ? Math.min(4, b + 1) : b, how, fielders: "" };
     this.draw();
@@ -1265,22 +1311,24 @@ const RunnerSheet = {
       ${s.fixedPitch ? `<p>同時の投球：<b>${s.pitch === "called_strike" ? "見逃し" : "空振り"}三振</b></p>` : `<p class="sec">その時の投球</p>
       <div class="chips">${pitches.map(([k, l]) => `<button class="chip ${s.pitch === k ? "on" : ""}" data-p="${k}">${l}</button>`).join("")}</div>${pitchNote ? `<p class="muted">${pitchNote}</p>` : ""}`}
       <p class="sec">走者の動き</p>${rows}
-      <div class="sheet-actions"><button class="btn" data-a="c">やめる</button><button class="btn primary" data-a="ok" ${ready ? "" : "disabled"}>記録する</button></div>`, el => this.bind(el));
+      <div class="sheet-actions"><button class="btn" data-a="back" ${this.hist.length ? "" : "disabled"}>1つ戻る</button><button class="btn" data-a="c">やめる</button><button class="btn primary" data-a="ok" ${ready ? "" : "disabled"}>記録する</button></div>`, el => this.bind(el));
   },
+  push(el) { this.keep(el); this.hist.push(JSON.stringify(this.st)); },
   bind(el) {
     const s = this.st;
     el.querySelector("[data-a=c]").onclick = closeSheet;
-    el.querySelectorAll("[data-w]").forEach(b => b.onclick = () => { this.keep(el); Object.values(s.moves).forEach(m => { if (m.to !== "out" && ["wp", "pb"].includes(m.how)) m.how = b.dataset.w; }); this.draw(); });
-    el.querySelectorAll("[data-p]").forEach(b => b.onclick = () => { this.keep(el); s.pitch = b.dataset.p; this.draw(); });
+    el.querySelector("[data-a=back]").onclick = () => { if (this.hist.length) { this.st = JSON.parse(this.hist.pop()); this.draw(); } };
+    el.querySelectorAll("[data-w]").forEach(b => b.onclick = () => { this.push(el); Object.values(s.moves).forEach(m => { if (m.to !== "out" && ["wp", "pb"].includes(m.how)) m.how = b.dataset.w; }); this.draw(); });
+    el.querySelectorAll("[data-p]").forEach(b => b.onclick = () => { this.push(el); s.pitch = b.dataset.p; this.draw(); });
     el.querySelectorAll("[data-m]").forEach(b => b.onclick = () => {
-      this.keep(el);
+      this.push(el);
       const base = parseInt(b.dataset.m, 10), m = s.moves[base];
       m.to = b.dataset.to === "out" ? "out" : parseInt(b.dataset.to, 10);
       if (m.to === "out") m.how = "cs";
       else if (["cs", "tag"].includes(m.how) || m.to === base) m.how = s.mode === "wild" ? "wp" : "sb";
       this.draw();
     });
-    el.querySelectorAll("[data-h]").forEach(b => b.onclick = () => { this.keep(el); s.moves[parseInt(b.dataset.h, 10)].how = b.dataset.how; this.draw(); });
+    el.querySelectorAll("[data-h]").forEach(b => b.onclick = () => { this.push(el); s.moves[parseInt(b.dataset.h, 10)].how = b.dataset.how; this.draw(); });
     el.querySelector("[data-a=ok]").onclick = async () => {
       this.keep(el);
       const moves = Object.entries(s.moves).filter(([b, m]) => m.to !== parseInt(b, 10)).map(([b, m]) => {
@@ -1303,6 +1351,7 @@ const SubSheet = {
   open(ed) {
     this.ed = ed;
     this.st = { kind: "pinch_hitter", side: ed.view.batting_side, base: null, inP: "", outP: "", pos: "" };
+    this.hist = [];
     this.draw();
   },
   draw() {
@@ -1341,18 +1390,21 @@ const SubSheet = {
       ? `<div class="chips" style="margin-top:10px">${["away", "home"].map(x => `<button class="chip ${s.side === x ? "on" : ""}" data-side="${x}">${esc(this.ed.v.team_names[x])}</button>`).join("")}</div>` : "";
     openSheet(`<h2>選手交代</h2><div class="chips">${kinds.map(([k, l]) => `<button class="chip ${s.kind === k ? "on" : ""}" data-k="${k}">${l}</button>`).join("")}</div>
       ${sidePick}${fields}
-      <div class="sheet-actions"><button class="btn" data-a="c">やめる</button><button class="btn primary" data-a="ok">交代を記録</button></div>`, el => this.bind(el));
+      <div class="sheet-actions"><button class="btn" data-a="back" ${this.hist.length ? "" : "disabled"}>1つ戻る</button><button class="btn" data-a="c">やめる</button><button class="btn primary" data-a="ok">交代を記録</button></div>`, el => this.bind(el));
   },
   bind(el) {
     const s = this.st, v = this.ed.view;
     const keep = () => { ["inP", "outP", "pos"].forEach(id => { const x = el.querySelector("#" + id); if (x) s[id] = x.value; }); };
+    const push = () => { keep(); this.hist.push(JSON.stringify(this.st)); };
     el.querySelector("[data-a=c]").onclick = closeSheet;
+    el.querySelector("[data-a=back]").onclick = () => { if (this.hist.length) { this.st = JSON.parse(this.hist.pop()); this.draw(); } };
+    ["inP", "outP", "pos"].forEach(id => { const x = el.querySelector("#" + id); if (x) { x.onfocus = () => { this._snap = JSON.stringify(this.st); }; x.onchange = () => { if (this._snap) this.hist.push(this._snap); keep(); this.draw(); }; } });
     el.querySelectorAll("[data-k]").forEach(b => b.onclick = () => {
-      keep(); s.kind = b.dataset.k; s.inP = s.outP = s.pos = ""; s.base = null;
+      push(); s.kind = b.dataset.k; s.inP = s.outP = s.pos = ""; s.base = null;
       s.side = s.kind === "pitcher" ? (v.batting_side === "away" ? "home" : "away") : v.batting_side; this.draw();
     });
-    el.querySelectorAll("[data-side]").forEach(b => b.onclick = () => { keep(); s.side = b.dataset.side; s.inP = s.outP = ""; this.draw(); });
-    el.querySelectorAll("[data-b]").forEach(b => b.onclick = () => { keep(); s.base = parseInt(b.dataset.b, 10); this.draw(); });
+    el.querySelectorAll("[data-side]").forEach(b => b.onclick = () => { push(); s.side = b.dataset.side; s.inP = s.outP = ""; this.draw(); });
+    el.querySelectorAll("[data-b]").forEach(b => b.onclick = () => { push(); s.base = parseInt(b.dataset.b, 10); this.draw(); });
     el.querySelector("[data-a=ok]").onclick = async () => {
       keep();
       if (!s.inP) { toast("選手を選んでください", "err"); return; }
@@ -1381,6 +1433,72 @@ async function pagePlayer(id) {
       ${f.G ? `<h2>守備成績</h2>${table([["G", "試合"], ["PO", "刺殺"], ["A", "補殺"], ["E", "失策"], ["DP", "併殺"], ["PB", "捕逸"], ["FPCT", "守備率"]], f)}` : ""}
       <h2>出場試合</h2><ul class="list">${d.games.map(g => `<li><a href="/g/${esc(g.view_token)}" data-link><span class="grow">${esc(g.date)} ${esc(g.away)} 対 ${esc(g.home)}<br><span class="muted">${g.bat.PA ? `${g.bat.AB || 0}打数${g.bat.H || 0}安打${g.bat.RBI ? " " + g.bat.RBI + "打点" : ""}` : ""}${g.decision ? " " + g.decision : ""}</span></span><span class="score">${g.summary?.away ?? 0}-${g.summary?.home ?? 0}</span></a></li>`).join("") || "<li class='ev'><div class='item'>まだありません</div></li>"}</ul>`;
   } catch (e) { showError(e); }
+}
+
+// ================================================================ スコアブック形式の出力（印刷・PDF保存用）
+const SB_HOW = { sb: "盗", wp: "暴", pb: "逸", bk: "ボ", error: "失", fc: "野", obstruction: "妨", interference: "妨" };
+const SB_PT = { 0: [32, 58], 1: [58, 32], 2: [32, 6], 3: [6, 32], 4: [32, 58] };
+const ROMAN = ["", "Ⅰ", "Ⅱ", "Ⅲ"];
+// 1打席分のマス（ダイヤモンドに進塁線・得点・アウト番号・結果を書き込む）
+function sbCellSvg(c) {
+  const lines = [], labels = [];
+  for (const sg of c.segments) {
+    if (sg.out) continue;
+    for (let b = sg.from; b < sg.to; b++) {
+      const [x1, y1] = SB_PT[b], [x2, y2] = SB_PT[b + 1];
+      lines.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="run"/>`);
+    }
+    if (sg.from > 0) {
+      // 進塁の理由（盗・暴など）または進めた打者の打順を、線の外側に書く
+      const lb = SB_HOW[sg.how] || (sg.by ? String(sg.by) : "");
+      if (lb) {
+        const [x1, y1] = SB_PT[sg.from], [x2, y2] = SB_PT[sg.from + 1];
+        const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+        const len = Math.hypot(mx - 32, my - 32) || 1;
+        labels.push(`<text x="${mx + (mx - 32) / len * 8}" y="${my + (my - 32) / len * 8 + 3}" class="lb" text-anchor="middle">${esc(lb)}</text>`);
+      }
+    }
+  }
+  let outMark = "";
+  const outSeg = c.segments.find(sg => sg.out);
+  if (outSeg && outSeg.from > 0) {
+    const [x1, y1] = SB_PT[outSeg.from], [x2, y2] = SB_PT[outSeg.from + 1];
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    outMark = `<line x1="${x1}" y1="${y1}" x2="${mx}" y2="${my}" class="run"/><text x="${mx}" y="${my + 4}" class="x" text-anchor="middle">×</text>`;
+  }
+  const fill = c.scored ? `<path d="M32 58 L58 32 L32 6 L6 32 Z" class="scored"/>` : "";
+  const outNo = c.out_no ? `<circle cx="56" cy="56" r="7" class="oc"/><text x="56" y="59.5" class="on" text-anchor="middle">${ROMAN[c.out_no] || c.out_no}</text>` : "";
+  const rbi = c.rbi ? `<text x="3" y="10" class="rbi">${"●".repeat(c.rbi)}</text>` : "";
+  const code = c.code.length > 4 ? `<text x="32" y="30" class="cd sm" text-anchor="middle">${esc(c.code.slice(0, 3))}</text><text x="32" y="40" class="cd sm" text-anchor="middle">${esc(c.code.slice(3))}</text>`
+    : `<text x="32" y="36" class="cd" text-anchor="middle">${esc(c.code)}</text>`;
+  return `<svg viewBox="0 0 64 64" class="sbcell${c.scored ? " is-run" : ""}" role="img" aria-label="${esc(c.label || c.code)}">
+    <path d="M32 58 L58 32 L32 6 L6 32 Z" class="dia"/>${fill}${lines.join("")}${outMark}${labels.join("")}${code}${outNo}${rbi}${c.unconfirmed ? `<text x="61" y="10" class="q" text-anchor="end">?</text>` : ""}</svg>`;
+}
+async function pageScorebook(token) {
+  $app.innerHTML = `<p class="boot">読み込み中…</p>`;
+  let v;
+  try { v = await api(`/api/view/${token}`); } catch (e) { $app.innerHTML = topbar("スコアブック") + `<div class="wrap"><p>${esc(e.message)}</p></div>`; bindTopbar(); return; }
+  const team = side => {
+    const bk = v.scorebook[side];
+    const cols = Array.from({ length: bk.innings }, (_, i) => i + 1);
+    const half = side === "away" ? "表" : "裏";
+    return `<section class="sb-page">
+      <div class="sb-head"><h2>${esc(v.team_names[side])}（${side === "away" ? "先攻" : "後攻"}）</h2>
+        <span>${esc(v.game.date)}${v.game.venue ? " " + esc(v.game.venue) : ""} ／ ${esc(v.team_names.away)} ${v.rhe.away.R} － ${v.rhe.home.R} ${esc(v.team_names.home)}</span></div>
+      <table class="sb"><thead><tr><th class="o">順</th><th class="n">打者</th>${cols.map(i => `<th>${i}${half}</th>`).join("")}</tr></thead>
+      <tbody>${bk.rows.map(r => `<tr><td class="o">${r.order}</td><td class="n">${r.names.map(esc).join("<br>")}</td>${cols.map(i => `<td>${(r.detail[i] || []).map(sbCellSvg).join("")}</td>`).join("")}</tr>`).join("")}</tbody>
+      <tfoot><tr><td></td><td class="n">安打</td>${cols.map(i => `<td>${bk.hits_by_inning[i] || ""}</td>`).join("")}</tr>
+      <tr><td></td><td class="n">得点</td>${cols.map(i => `<td>${v.linescore[side][i - 1] ?? ""}</td>`).join("")}</tr></tfoot></table>
+    </section>`;
+  };
+  $app.innerHTML = topbar("スコアブック", `<button id="print">印刷・PDF</button>`) + `
+    <div class="sb-wrap">
+      <p class="muted no-print">線＝進んだ塁、塗りつぶし＝得点、Ⅰ〜Ⅲ＝何番目のアウトか、●＝打点、線の横の数字＝進塁させた打者の打順、盗・暴・逸・失・野・ボ＝盗塁・暴投・捕逸・失策・野選・ボーク、？＝未確認
+      <br>iPhoneは「印刷・PDF」→ 共有 → 「ファイルに保存」でPDFにできます</p>
+      ${team("away")}${team("home")}
+    </div>`;
+  bindTopbar();
+  document.getElementById("print").onclick = () => window.print();
 }
 
 route();
