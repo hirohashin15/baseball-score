@@ -601,6 +601,8 @@ class Game:
             "pos": pos,
             "fielders": fielders,
             "seq": seq_text,
+            "error_pos": error_pos if result in ("reach_on_error", "strikeout_dropped") else None,
+            "looking": bool(play.get("looking")),
             "rbi": summary["rbi"],
             "runs": summary["runs"],
             "outs_on_play": summary["outs"],

@@ -309,6 +309,10 @@ def scorebook(g: Game) -> dict:
                 hits_by_inn[pa["inning"]] = hits_by_inn.get(pa["inning"], 0) + 1
             detail.setdefault(order, {}).setdefault(pa["inning"], []).append({
                 "code": mark, "label": pa.get("label"), "seq": pa.get("seq"), "rbi": pa.get("rbi", 0),
+                "result": pa.get("result"), "pos": pa.get("pos"), "fielders": pa.get("fielders") or [],
+                "pitches": pa.get("pitches", []), "outs_on_play": pa.get("outs_on_play", 0),
+                "error_pos": pa.get("error_pos"), "looking": pa.get("looking"),
+                "inning": pa["inning"], "half": pa["half"],
                 "segments": segs, "reached": reached, "scored": scored,
                 "out_no": out_seg["out_no"] if out_seg else None,
                 "out_from": out_seg["from"] if out_seg else None,

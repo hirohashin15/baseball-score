@@ -1435,45 +1435,98 @@ async function pagePlayer(id) {
   } catch (e) { showError(e); }
 }
 
-// ================================================================ スコアブック形式の出力（印刷・PDF保存用）
-const SB_HOW = { sb: "盗", wp: "暴", pb: "逸", bk: "ボ", error: "失", fc: "野", obstruction: "妨", interference: "妨" };
-const SB_PT = { 0: [32, 58], 1: [58, 32], 2: [32, 6], 3: [6, 32], 4: [32, 58] };
+// ================================================================ スコアブック形式の出力（早稲田式・印刷/PDF保存用）
+// マスの作り：左の細い欄＝ボールカウント、右の正方形を4つの角に分けて
+//   右下＝一塁、右上＝二塁、左上＝三塁、左下＝本塁、中央＝走者の最終結果（〇＝得点、Ⅰ〜Ⅲ＝アウト、l＝残塁）
+const WS_HOW = { sb: "S", wp: "WP", pb: "PB", bk: "BK", error: "E", obstruction: "OB", interference: "IF", fc: "FC" };
+const WS_PITCH = { ball: "●", called_strike: "○", swinging_strike: "×", foul: "∨", foul_bunt: "∨", foul_tip: "×", hbp: "●", unknown: "・" };
 const ROMAN = ["", "Ⅰ", "Ⅱ", "Ⅲ"];
-// 1打席分のマス（ダイヤモンドに進塁線・得点・アウト番号・結果を書き込む）
-function sbCellSvg(c) {
-  const lines = [], labels = [];
-  for (const sg of c.segments) {
-    if (sg.out) continue;
-    for (let b = sg.from; b < sg.to; b++) {
-      const [x1, y1] = SB_PT[b], [x2, y2] = SB_PT[b + 1];
-      lines.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="run"/>`);
+const WS_X0 = 14, WS_S = 64;                       // 正方形の左端と一辺
+const WS_CORNER = { 0: [WS_X0, WS_S], 1: [WS_X0 + WS_S, WS_S], 2: [WS_X0 + WS_S, 0], 3: [WS_X0, 0], 4: [WS_X0, WS_S] };
+const WS_REGION = { 1: [WS_X0 + WS_S - 16, WS_S - 10], 2: [WS_X0 + WS_S - 16, 15], 3: [WS_X0 + 16, 15], 4: [WS_X0 + 16, WS_S - 10] };
+function wsText(x, y, t, cls = "t") { return `<text x="${x}" y="${y}" class="${cls}" text-anchor="middle">${esc(t)}</text>`; }
+// 打者の打席結果（一塁の区画に書く）
+function wsResult(c) {
+  const [x, y] = WS_REGION[1];
+  const f = (c.fielders || []).map(String);
+  const pos = c.pos ? String(c.pos) : "";
+  const arcOver = (cx, cy) => `<path d="M${cx - 5} ${cy - 10} Q${cx} ${cy - 18} ${cx + 5} ${cy - 10}" class="arc"/>`;
+  // ゴロ：数字と数字の間に∪の弧を描く（6∪3、一塁手が自分で踏んだら 3∪A）
+  const ground = (a, b) => wsText(x - 8, y, a, "t") + `<path d="M${x - 4} ${y - 8} Q${x - 1} ${y + 1} ${x + 2} ${y - 8}" class="arc"/>` + wsText(x + 7, y, b, b.length > 1 ? "t sm" : "t");
+  switch (c.result) {
+    case "single": case "double": case "triple": case "home_run": {
+      const box = c.pos && c.pos <= 6 ? `<rect x="${x - 7}" y="${y - 10}" width="14" height="13" class="box hit"/>` : "";
+      return box + wsText(x, y, pos || "安", "t hit") + `<circle cx="${x + 8}" cy="${y - 9}" r="1.4" class="dot"/>`;
     }
-    if (sg.from > 0) {
-      // 進塁の理由（盗・暴など）または進めた打者の打順を、線の外側に書く
-      const lb = SB_HOW[sg.how] || (sg.by ? String(sg.by) : "");
-      if (lb) {
-        const [x1, y1] = SB_PT[sg.from], [x2, y2] = SB_PT[sg.from + 1];
-        const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-        const len = Math.hypot(mx - 32, my - 32) || 1;
-        labels.push(`<text x="${mx + (mx - 32) / len * 8}" y="${my + (my - 32) / len * 8 + 3}" class="lb" text-anchor="middle">${esc(lb)}</text>`);
-      }
+    case "ground_out": case "sac_bunt": {
+      const g = f.length >= 2 ? ground(f[0], f.slice(1).join("")) : ground(f[0] || pos, f.length === 1 ? "A" : "");
+      return (c.result === "sac_bunt" ? `<path d="M${x} ${y - 17} l9 9 -9 9 -9 -9 z" class="box"/>` : "") + g;
     }
+    case "fly_out": case "sac_fly": case "infield_fly":
+      return (c.result === "sac_fly" ? `<path d="M${x} ${y - 13} l7 7 -7 7 -7 -7 z" class="box"/>` : "") +
+        arcOver(x, y) + wsText(x, y, c.result === "infield_fly" ? `IFF${pos}` : pos, c.result === "infield_fly" ? "t sm" : "t");
+    case "foul_fly": return arcOver(x + 3, y) + wsText(x, y, `F${pos}`);
+    case "line_out": return `<line x1="${x - 5}" y1="${y - 10}" x2="${x + 5}" y2="${y - 10}" class="arc"/>` + wsText(x, y, pos);
+    case "strikeout": return wsText(x, y, "K", "t k");
+    case "strikeout_dropped": return `<text x="${x}" y="${y}" class="t k" text-anchor="middle" transform="translate(${2 * x} 0) scale(-1 1)">K</text>`;
+    case "walk": case "ibb": return wsText(x, y, c.result === "ibb" ? "IB" : "B");
+    case "hbp": return wsText(x, y, "DB");
+    case "reach_on_error": return wsText(x, y, `${c.error_pos || pos}E`, "t err");
+    case "fielders_choice": return wsText(x, y, "FC");
+    case "force_out": return ground(pos, "");
+    case "interference": return wsText(x, y, "IF");
+    default: return wsText(x, y, "?");
   }
-  let outMark = "";
-  const outSeg = c.segments.find(sg => sg.out);
-  if (outSeg && outSeg.from > 0) {
-    const [x1, y1] = SB_PT[outSeg.from], [x2, y2] = SB_PT[outSeg.from + 1];
-    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-    outMark = `<line x1="${x1}" y1="${y1}" x2="${mx}" y2="${my}" class="run"/><text x="${mx}" y="${my + 4}" class="x" text-anchor="middle">×</text>`;
-  }
-  const fill = c.scored ? `<path d="M32 58 L58 32 L32 6 L6 32 Z" class="scored"/>` : "";
-  const outNo = c.out_no ? `<circle cx="56" cy="56" r="7" class="oc"/><text x="56" y="59.5" class="on" text-anchor="middle">${ROMAN[c.out_no] || c.out_no}</text>` : "";
-  const rbi = c.rbi ? `<text x="3" y="10" class="rbi">${"●".repeat(c.rbi)}</text>` : "";
-  const code = c.code.length > 4 ? `<text x="32" y="30" class="cd sm" text-anchor="middle">${esc(c.code.slice(0, 3))}</text><text x="32" y="40" class="cd sm" text-anchor="middle">${esc(c.code.slice(3))}</text>`
-    : `<text x="32" y="36" class="cd" text-anchor="middle">${esc(c.code)}</text>`;
-  return `<svg viewBox="0 0 64 64" class="sbcell${c.scored ? " is-run" : ""}" role="img" aria-label="${esc(c.label || c.code)}">
-    <path d="M32 58 L58 32 L32 6 L6 32 Z" class="dia"/>${fill}${lines.join("")}${outMark}${labels.join("")}${code}${outNo}${rbi}${c.unconfirmed ? `<text x="61" y="10" class="q" text-anchor="end">?</text>` : ""}</svg>`;
 }
+function sbCellSvg(c, v) {
+  const parts = [];
+  // 正方形と4区画の線
+  const X = WS_X0, S = WS_S, m = S / 2;
+  parts.push(`<rect x="${X}" y="0" width="${S}" height="${S}" class="frame"/>`);
+  parts.push(`<path d="M${X + m} 0 L${X + S} ${m} L${X + m} ${S} L${X} ${m} Z" class="inner"/>`);
+  // ボールカウント（左の細い欄）
+  const ps = (c.pitches || []).filter(p => p !== "in_play").map(p => WS_PITCH[p] || "・");
+  const step = ps.length > 8 ? 56 / ps.length : 7.5;
+  ps.forEach((sym, i) => parts.push(`<text x="6.5" y="${8 + i * step}" class="cnt${sym === "●" ? " ball" : ""}" text-anchor="middle" style="font-size:${Math.min(7, step)}px">${sym}</text>`));
+  if (c.unrecorded && !ps.length) parts.push(`<text x="6.5" y="10" class="cnt" text-anchor="middle">－</text>`);
+  // 打席結果
+  parts.push(wsResult(c));
+  // 進塁の線と理由
+  const hit = RESULT_META_HIT.has(c.result);
+  for (const sg of c.segments) {
+    const isBatterReach = sg.from === 0 && !sg.out;
+    if (!sg.out) {
+      const red = hit && (isBatterReach || false);
+      // 安打以外での出塁（四球・失策など）は、打者自身の出塁には線を引かない
+      if (!(isBatterReach && !hit)) {
+        for (let b = sg.from; b < sg.to; b++) {
+          const [x1, y1] = WS_CORNER[b], [x2, y2] = WS_CORNER[b + 1];
+          parts.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="run${red ? " hit" : ""}"/>`);
+        }
+      }
+      if (sg.from > 0) {
+        const lb = WS_HOW[sg.how] || (sg.by ? `(${sg.by})` : "");
+        if (lb) { const [x, y] = WS_REGION[sg.to]; parts.push(wsText(x, y, lb, `t sm${sg.how === "error" ? " err" : ""}`)); }
+      }
+    } else if (sg.from > 0) {
+      // 走者のアウト：アウトになった塁の区画に守備の流れ（盗塁死はT）
+      const [x, y] = WS_REGION[sg.to];
+      const fl = (sg.fielders || []).join("-") + (["cs", "po", "tag"].includes(sg.how) ? "T" : "");
+      parts.push(wsText(x, y, fl || "×", "t sm out"));
+    }
+  }
+  // 中央：最終結果
+  const cx = X + m, cy = m;
+  const liveHalf = v.status === "live" && c.inning === v.inning && c.half === v.half;
+  if (c.scored) parts.push(`<circle cx="${cx}" cy="${cy}" r="9" class="runc"/>`);
+  else if (c.out_no) parts.push(wsText(cx, cy + 4.5, ROMAN[c.out_no] || c.out_no, "t on"));
+  else if (c.reached && !liveHalf) parts.push(wsText(cx, cy + 4, "l", "t lob"));
+  if (c.outs_on_play >= 2 && c.out_no) parts.push(wsText(cx, cy + 15, c.outs_on_play === 2 ? "DP" : "TP", "t xs"));
+  if (c.rbi) parts.push(`<text x="6.5" y="${S - 2}" class="rbi" text-anchor="middle">${c.rbi}</text><circle cx="6.5" cy="${S - 5}" r="5" class="rbic"/>`);
+  if (c.unconfirmed) parts.push(`<text x="${X + S - 2}" y="9" class="q" text-anchor="end">?</text>`);
+  return `<svg viewBox="0 0 ${X + S + 1} ${S + 1}" class="sbcell" role="img" aria-label="${esc(c.label || c.code)}">${parts.join("")}</svg>`;
+}
+const RESULT_META_HIT = new Set(["single", "double", "triple", "home_run"]);
 async function pageScorebook(token) {
   $app.innerHTML = `<p class="boot">読み込み中…</p>`;
   let v;
@@ -1486,14 +1539,15 @@ async function pageScorebook(token) {
       <div class="sb-head"><h2>${esc(v.team_names[side])}（${side === "away" ? "先攻" : "後攻"}）</h2>
         <span>${esc(v.game.date)}${v.game.venue ? " " + esc(v.game.venue) : ""} ／ ${esc(v.team_names.away)} ${v.rhe.away.R} － ${v.rhe.home.R} ${esc(v.team_names.home)}</span></div>
       <table class="sb"><thead><tr><th class="o">順</th><th class="n">打者</th>${cols.map(i => `<th>${i}${half}</th>`).join("")}</tr></thead>
-      <tbody>${bk.rows.map(r => `<tr><td class="o">${r.order}</td><td class="n">${r.names.map(esc).join("<br>")}</td>${cols.map(i => `<td>${(r.detail[i] || []).map(sbCellSvg).join("")}</td>`).join("")}</tr>`).join("")}</tbody>
+      <tbody>${bk.rows.map(r => `<tr><td class="o">${r.order}</td><td class="n">${r.names.map(esc).join("<br>")}</td>${cols.map(i => `<td>${(r.detail[i] || []).map(c => sbCellSvg(c, v)).join("")}</td>`).join("")}</tr>`).join("")}</tbody>
       <tfoot><tr><td></td><td class="n">安打</td>${cols.map(i => `<td>${bk.hits_by_inning[i] || ""}</td>`).join("")}</tr>
       <tr><td></td><td class="n">得点</td>${cols.map(i => `<td>${v.linescore[side][i - 1] ?? ""}</td>`).join("")}</tr></tfoot></table>
     </section>`;
   };
   $app.innerHTML = topbar("スコアブック", `<button id="print">印刷・PDF</button>`) + `
     <div class="sb-wrap">
-      <p class="muted no-print">線＝進んだ塁、塗りつぶし＝得点、Ⅰ〜Ⅲ＝何番目のアウトか、●＝打点、線の横の数字＝進塁させた打者の打順、盗・暴・逸・失・野・ボ＝盗塁・暴投・捕逸・失策・野選・ボーク、？＝未確認
+      <p class="muted no-print">早稲田式で表示しています　右下＝一塁、右上＝二塁、左上＝三塁、左下＝本塁、中央＝最終結果（赤〇＝得点、Ⅰ〜Ⅲ＝アウト、l＝残塁）
+      <br>左の欄：●ボール ○見逃し ×空振り ∨ファウル　∪ゴロ ⌒フライ －ライナー K三振（逆K＝振り逃げ）B四球 DB死球 E失策 S盗塁 WP暴投 PB捕逸 BKボーク (数字)＝進塁させた打者の打順 T＝タッチアウト 左下の赤丸数字＝打点 ？＝未確認
       <br>iPhoneは「印刷・PDF」→ 共有 → 「ファイルに保存」でPDFにできます</p>
       ${team("away")}${team("home")}
     </div>`;
