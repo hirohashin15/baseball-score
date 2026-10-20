@@ -529,3 +529,27 @@ def test_catcher_strikeout_putouts():
     t.pa("strikeout"); t.pa("fly_out", 2)
     g = t.ok()
     assert g.fld["H8"]["PO"] == 2 and g.fld["H8"]["PO_K"] == 1
+
+
+def test_left_right_splits():
+    from app.engine.core import replay
+    from app.engine.views import player_game_stats, splits
+    from .helpers import roster
+    r = roster()
+    r["HP1"]["throws"] = "L"
+    r["HP2"]["throws"] = "R"
+    r["A1"]["bats"] = "S"
+    t = G()
+    t.pa("home_run", 7)                       # A1 対左投手 本塁打（両打→右打席）
+    t.pa("strikeout")
+    t.pa("strikeout")
+    t.sub(kind="pitcher", side="home", in_player="HP2")
+    t.pa("single", 8)                         # A4 対右投手 単打（A4の打は未登録）
+    g, _ = replay(t.events, {}, r)
+    st = player_game_stats(g)
+    a1 = splits(st["A1"]["bat"])
+    assert a1["L"]["HR"] == 1 and "R" not in a1
+    a4 = splits(st["A4"]["bat"])
+    assert a4["R"]["H"] == 1
+    hp1 = splits(st["HP1"]["pit"])
+    assert hp1["R"]["HR"] == 1                # 両打のA1は右打者として数える

@@ -311,7 +311,7 @@ function playerForm(teamId, p, after, editToken = null) {
         if (!name) { toast("名前を入力してください", "err"); return; }
         try {
           let r;
-          if (p) r = await apiAdmin(`/api/players/${p.id}`, { method: "PATCH", body: { name, number, ...hand, active: el.querySelector("#pact").checked } });
+          if (p) r = await (editToken ? api : apiAdmin)(`/api/players/${p.id}`, { method: "PATCH", body: { name, number, ...hand, active: el.querySelector("#pact").checked }, headers: editToken ? { "X-Edit-Token": editToken } : {} });
           else r = await (editToken ? api : apiAdmin)(`/api/teams/${teamId}/players`, { method: "POST", body: { name, number, ...hand }, headers: editToken ? { "X-Edit-Token": editToken } : {} });
           closeSheet(); toast(p ? "保存しました" : `${name}を追加しました`, "ok");
           if (after) await after(r);
@@ -1052,7 +1052,8 @@ const Editor = {
       <div class="chips"><button class="chip ${this._luMode === "order" ? "on" : ""}" data-lum="order">打順で入力</button><button class="chip ${this._luMode === "pos" ? "on" : ""}" data-lum="pos">守備位置で入力</button></div>
       <input id="lusearch" type="text" placeholder="名前・背番号で絞り込む" value="${esc(this._luSearch || "")}" style="margin-top:10px" autocomplete="off">
       ${rows}
-      <div class="row-btns"><button class="btn" id="addp">選手を追加</button><button class="btn primary" id="saveL">このスタメンで登録</button></div>
+      <div class="row-btns"><button class="btn" id="addp">選手を追加</button><button class="btn" id="editp">選手を編集</button></div>
+      <button class="btn primary block" id="saveL">このスタメンで登録</button>
       ${this.v.status === "pregame" && !this.mode ? `<button class="btn block" id="swap">先攻・後攻を入れ替える</button>` : ""}
       ${(this.v.game.rules || {}).extra_hitters ? `<button class="btn small" id="more">打順を1人増やす</button>` : ""}
       <p class="muted">守備位置が分からない選手は空欄でも登録できます</p></div>`;
@@ -1091,6 +1092,16 @@ const Editor = {
     $app.querySelectorAll("[data-pord]").forEach(s => s.onchange = () => this.setByPos(dr, s.dataset.pord, null, s.value));
     const teamId = this.v.game[side === "away" ? "away_team" : "home_team"].id;
     document.getElementById("addp").onclick = () => playerForm(teamId, null, async () => { await this.reload(); }, this.token);
+    // 登録済みの選手を直す（背番号の入れ忘れなど）
+    document.getElementById("editp").onclick = () => {
+      const ps = this.v.roster[side];
+      openSheet(`<h2>選手を編集</h2><p class="muted">直したい選手を押してください</p>
+        <div class="tiles">${ps.map(p => `<button class="tile" data-pe="${esc(p.id)}"><span class="no num">${esc(p.number || "－")}</span><span class="nm">${esc(p.name)}</span>${handJa(p) ? `<span class="hd">${handJa(p)}</span>` : ""}</button>`).join("") || "<p class='muted'>選手がいません</p>"}</div>
+        <div class="sheet-actions"><button class="btn" data-a="c">閉じる</button></div>`, el => {
+        el.querySelector("[data-a=c]").onclick = closeSheet;
+        el.querySelectorAll("[data-pe]").forEach(b => b.onclick = () => playerForm(teamId, ps.find(x => x.id === b.dataset.pe), async () => { await this.reload(); }, this.token));
+      });
+    };
     const more = document.getElementById("more");
     if (more) more.onclick = () => { dr.slots.push({ pid: "", pos: "" }); this.render(); };
     document.getElementById("saveL").onclick = async () => {
@@ -1451,6 +1462,16 @@ const SubSheet = {
 };
 
 // ================================================================ 選手の通算成績
+// 左右別の成績（対右・対左） 相手の投打が未登録の打席は数えない
+function splitHtml(title, sp, vsLabel, pitcher) {
+  if (!sp || (!sp.R && !sp.L)) return `<h2>${title}</h2><p class="muted">相手の投打が登録された打席がまだありません</p>`;
+  const cols = pitcher
+    ? [["PA", "打者"], ["AB", "打数"], ["H", "被安打"], ["HR", "被本塁打"], ["BB", "四球"], ["HBP", "死球"], ["SO", "奪三振"], ["AVG", "被打率"]]
+    : [["PA", "打席"], ["AB", "打数"], ["H", "安打"], ["HR", "本塁打"], ["RBI", "打点"], ["BB", "四球"], ["HBP", "死球"], ["SO", "三振"], ["AVG", "打率"], ["OBP", "出塁率"], ["SLG", "長打率"]];
+  const row = (k, label) => sp[k] ? `<tr><td class="l">${label}</td>${cols.map(c => `<td>${sp[k][c[0]] ?? "-"}</td>`).join("")}</tr>` : "";
+  return `<h2>${title}</h2><div class="scroll-x"><table class="stats"><thead><tr><th class="l"></th>${cols.map(c => `<th>${c[1]}</th>`).join("")}</tr></thead>
+    <tbody>${row("R", `対右${vsLabel}`)}${row("L", `対左${vsLabel}`)}</tbody></table></div>${pitcher ? "" : `<p class="muted">両打の打者は、投手と逆の打席として数えます</p>`}`;
+}
 async function pagePlayer(id) {
   $app.innerHTML = topbar("選手成績") + `<div class="wrap"><p class="muted">読み込み中…</p></div>`;
   bindTopbar();
@@ -1462,6 +1483,8 @@ async function pagePlayer(id) {
     document.querySelector(".wrap").innerHTML = `<h1>${esc(pname(d.player))}</h1><p class="muted">${esc(d.player.team)} ／ ${d.career.games}試合</p>
       <h2>打撃成績</h2>${table([["G", "試合"], ["AVG", "打率"], ["PA", "打席"], ["AB", "打数"], ["R", "得点"], ["H", "安打"], ["2B", "二塁打"], ["3B", "三塁打"], ["HR", "本塁打"], ["TB", "塁打"], ["RBI", "打点"], ["SB", "盗塁"], ["CS", "盗塁刺"], ["SH", "犠打"], ["SF", "犠飛"], ["BB", "四球"], ["IBB", "故意四球"], ["HBP", "死球"], ["SO", "三振"], ["GIDP", "併殺打"], ["SLG", "長打率"], ["OBP", "出塁率"]], b)}
       ${p.G ? `<h2>投手成績</h2>${table([["G", "登板"], ["W", "勝利"], ["L", "敗北"], ["SV", "セーブ"], ["HLD", "ホールド"], ["IP", "投球回"], ["BF", "打者"], ["pitches", "投球数"], ["H", "安打"], ["HR", "本塁打"], ["BB", "四球"], ["IBB", "故意四球"], ["HBP", "死球"], ["SO", "三振"], ["WP", "暴投"], ["BK", "ボーク"], ["R", "失点"], ["ER", "自責点"], ["ERA", "防御率"]], p)}` : ""}
+      ${splitHtml("打撃の左右別", d.career.bat_splits, "投手", false)}
+      ${p.G ? splitHtml("投手の左右別", d.career.pit_splits, "打者", true) : ""}
       ${f.G ? `<h2>守備成績</h2>${table([["G", "試合"], ["PO", "刺殺"], ["A", "補殺"], ["E", "失策"], ["DP", "併殺"], ["PB", "捕逸"], ["FPCT", "守備率"]], f)}` : ""}
       <h2>出場試合</h2><ul class="list">${d.games.map(g => `<li><a href="/g/${esc(g.view_token)}" data-link><span class="grow">${esc(g.date)} ${esc(g.away)} 対 ${esc(g.home)}<br><span class="muted">${g.bat.PA ? `${g.bat.AB || 0}打数${g.bat.H || 0}安打${g.bat.RBI ? " " + g.bat.RBI + "打点" : ""}` : ""}${g.decision ? " " + g.decision : ""}</span></span><span class="score">${g.summary?.away ?? 0}-${g.summary?.home ?? 0}</span></a></li>`).join("") || "<li class='ev'><div class='item'>まだありません</div></li>"}</ul>`;
   } catch (e) { showError(e); }

@@ -330,13 +330,29 @@ def add_player(team_id: str, body: PlayerIn, s: Session = Depends(get_session),
     return _pdict(p)
 
 
-@app.patch("/api/players/{player_id}", dependencies=[Depends(require_passcode)])
-def edit_player(player_id: str, body: PlayerIn, s: Session = Depends(get_session)):
+@app.patch("/api/players/{player_id}")
+def edit_player(player_id: str, body: PlayerIn, s: Session = Depends(get_session),
+                x_passcode: str | None = Header(default=None), x_edit_token: str | None = Header(default=None)):
+    """選手の編集 管理用パスコード、またはその選手のチームの試合の編集鍵があれば編集できる（試合入力中の修正用）"""
     p = s.get(db.Player, player_id)
     if not p:
         raise err(404, "選手が見つかりません")
+    allowed = not ADMIN_PASSCODE or x_passcode == ADMIN_PASSCODE
+    if not allowed and x_edit_token:
+        g = s.scalars(select(db.Game).where(db.Game.edit_token == x_edit_token)).first()
+        allowed = bool(g and p.team_id in (g.away_team_id, g.home_team_id))
+    if not allowed:
+        raise err(401, "選手を編集する権限がありません")
     p.name, p.number, p.active = body.name.strip(), (body.number or "").strip() or None, body.active
+    hand_changed = (p.throws, p.bats) != (body.throws or None, body.bats or None)
     p.throws, p.bats = body.throws or None, body.bats or None
+    s.flush()
+    if hand_changed:
+        # 投打を後から登録・変更したら、その選手のチームの試合の成績（左右別）を作り直す
+        games = s.scalars(select(db.Game).where((db.Game.away_team_id == p.team_id) | (db.Game.home_team_id == p.team_id))).all()
+        for game in games:
+            g, _ = _compute(game, _events(s, game))
+            _save_projections(s, game, g)
     s.commit()
     return _pdict(p)
 

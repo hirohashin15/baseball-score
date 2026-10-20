@@ -199,6 +199,20 @@ def player_game_stats(g: Game) -> dict[str, dict]:
     for pid, c in g.fld.items():
         if pid in out:
             out[pid]["fld"] = Counter(c)
+    # 左右別の成績（対右投手・対左投手／対右打者・対左打者） キーは "vsR_H" のように持つ
+    for pa in g.pa_log:
+        bid, pid = pa.get("batter"), pa.get("pitcher")
+        th = g.roster.get(pid, {}).get("throws")
+        bt = g.roster.get(bid, {}).get("bats")
+        if bt == "S":  # 両打は投手と逆の打席に立つ
+            bt = {"R": "L", "L": "R"}.get(th)
+        line = split_line(pa)
+        if th and bid in out:
+            for k, n in line.items():
+                out[bid]["bat"][f"vs{th}_{k}"] += n
+        if bt and pid in out:
+            for k, n in line.items():
+                out[pid]["pit"][f"vs{bt}_{k}"] += n
     batted = set()
     for side in ("away", "home"):
         batted |= {pid for _, pid in g.teams[side].slot_history}
@@ -220,6 +234,32 @@ def player_game_stats(g: Game) -> dict[str, dict]:
         elif pid in holds:
             dec, row["pit"]["HLD"] = "H", 1
         row["decision"] = dec
+    return out
+
+
+SPLIT_KEYS = ["PA", "AB", "H", "TB", "HR", "BB", "HBP", "SO", "SF", "RBI"]
+
+
+def split_line(pa: dict) -> dict:
+    """1打席を、左右別成績の数字にする"""
+    res = pa.get("result")
+    meta = RESULT_META.get(res, {})
+    hit = meta.get("hit") or 0
+    return {
+        "PA": 1, "AB": 1 if meta.get("ab") else 0, "H": 1 if hit else 0, "TB": hit,
+        "HR": 1 if hit == 4 else 0, "BB": 1 if res in ("walk", "ibb") else 0,
+        "HBP": 1 if res == "hbp" else 0, "SO": 1 if res in ("strikeout", "strikeout_dropped") else 0,
+        "SF": 1 if res == "sac_fly" else 0, "RBI": pa.get("rbi", 0) or 0,
+    }
+
+
+def splits(c: Counter) -> dict:
+    """通算の数字から左右別の成績表を作る（R=右 L=左）"""
+    out = {}
+    for hand in ("R", "L"):
+        sc = Counter({k: c.get(f"vs{hand}_{k}", 0) for k in SPLIT_KEYS})
+        if sc["PA"]:
+            out[hand] = {**dict(sc), **batting_rates(sc)}
     return out
 
 
@@ -351,4 +391,6 @@ def career(rows: list[dict]) -> dict:
         "batting": {**{k: bat[k] for k in BAT_KEYS}, **batting_rates(bat)},
         "pitching": {**{k: pit[k] for k in PIT_KEYS}, **pitching_rates(pit)},
         "fielding": {**{k: fld[k] for k in FLD_KEYS}, **fielding_rates(fld)},
+        "bat_splits": splits(bat),   # 対右投手・対左投手
+        "pit_splits": splits(pit),   # 対右打者・対左打者
     }

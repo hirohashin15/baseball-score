@@ -178,3 +178,17 @@ def test_swap_sides_before_start(client):
     ev(client, tok, "lineup", {"side": "away", "slots": [{"player_id": hp[i], "position": POS[i]} for i in range(9)]})
     ev(client, tok, "pitch", {"result": "ball"})
     assert client.post(f"/api/edit/{tok}/swap", json={"client_id": "devA"}).status_code == 409
+
+
+def test_edit_player_with_edit_token(client, game):
+    pid = game["ap"][10]
+    r = client.patch(f"/api/players/{pid}", json={"name": "赤11", "number": "51"}, headers={"X-Edit-Token": game["tok"]})
+    assert r.status_code == 200 and r.json()["number"] == "51"
+
+
+def test_splits_recomputed_after_hand_change(client, game):
+    v = client.get(f"/api/edit/{game['tok']}").json()
+    pitcher = v["lineups"]["home"]["pitcher"]["id"]
+    client.patch(f"/api/players/{pitcher}", json={"name": "青9", "throws": "L"})
+    st = client.get(f"/api/players/{game['ap'][0]}/stats").json()
+    assert "L" in st["career"]["bat_splits"]
