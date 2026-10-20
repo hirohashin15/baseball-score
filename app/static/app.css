@@ -332,3 +332,7 @@ table.sb td { min-width: 82px; height: 68px; }
   .sb-page:last-child { page-break-after: auto; }
   .sb-head span { color: #333; }
 }
+
+/* 投打の表示 */
+.tile .hd { font-size: .72rem; color: var(--muted); }
+.who .hand { font-size: .75rem; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; flex: none; }

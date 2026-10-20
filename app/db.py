@@ -73,6 +73,8 @@ class Player(Base):
     team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"))
     name: Mapped[str] = mapped_column(String(100))
     number: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    throws: Mapped[str | None] = mapped_column(String(1), nullable=True)  # 投：R=右 L=左
+    bats: Mapped[str | None] = mapped_column(String(1), nullable=True)    # 打：R=右 L=左 S=両
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     team: Mapped[Team] = relationship(back_populates="players")
@@ -148,5 +150,17 @@ class PlayerGameStat(Base):
     text_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+# 後から追加した列（すでに表がある本番DBにも足す）
+_ADDED_COLUMNS = {"players": {"throws": "VARCHAR(1)", "bats": "VARCHAR(1)"}}
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table, cols in _ADDED_COLUMNS.items():
+            have = {c["name"] for c in insp.get_columns(table)}
+            for name, typ in cols.items():
+                if name not in have:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {typ}"))

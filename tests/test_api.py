@@ -153,3 +153,28 @@ def test_event_history_has_pitch_numbers_and_names(client, game):
     pitches = [e for e in v["events"] if e["type"] == "pitch"]
     assert pitches[0]["pitch_no"] == 1 and pitches[0]["pa_no"] == 1
     assert "batter_name" in pitches[0]["after"]
+
+
+def test_player_handedness(client):
+    t = client.post("/api/teams", json={"name": "左右", "short_name": "左右"}).json()
+    p = client.post(f"/api/teams/{t['id']}/players", json={"name": "左打者", "throws": "R", "bats": "L"}).json()
+    assert p["throws"] == "R" and p["bats"] == "L"
+    r = client.patch(f"/api/players/{p['id']}", json={"name": "左打者", "throws": "L", "bats": "S"}).json()
+    assert r["throws"] == "L" and r["bats"] == "S"
+    assert client.post(f"/api/teams/{t['id']}/players", json={"name": "x", "bats": "X"}).status_code == 422
+
+
+def test_swap_sides_before_start(client):
+    a, ap = _team(client, "入替赤")
+    h, hp = _team(client, "入替青")
+    g = client.post("/api/games", json={"date": "2026-11-02", "away_team_id": a, "home_team_id": h}).json()
+    tok = g["edit_token"]
+    ev(client, tok, "lineup", {"side": "away", "slots": [{"player_id": ap[i], "position": POS[i]} for i in range(9)]})
+    v = client.post(f"/api/edit/{tok}/swap", json={"client_id": "devA"}).json()
+    assert v["game"]["away_team"]["id"] == h and v["game"]["home_team"]["id"] == a
+    assert v["lineups"]["home"]["set"] and not v["lineups"]["away"]["set"]
+    assert v["lineups"]["home"]["slots"][0]["id"] == ap[0]
+    # 試合が始まったら入れ替えできない
+    ev(client, tok, "lineup", {"side": "away", "slots": [{"player_id": hp[i], "position": POS[i]} for i in range(9)]})
+    ev(client, tok, "pitch", {"result": "ball"})
+    assert client.post(f"/api/edit/{tok}/swap", json={"client_id": "devA"}).status_code == 409

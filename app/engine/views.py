@@ -62,7 +62,8 @@ def _player(g: Game, pid: str | None) -> dict | None:
     if not pid:
         return None
     p = g.roster.get(pid, {})
-    return {"id": pid, "name": p.get("name", pid), "number": p.get("number")}
+    return {"id": pid, "name": p.get("name", pid), "number": p.get("number"),
+            "throws": p.get("throws"), "bats": p.get("bats")}
 
 
 def _fielder_name(g: Game, key: str) -> str:

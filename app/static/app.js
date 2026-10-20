@@ -54,6 +54,12 @@ document.addEventListener("pointerdown", ev => {
 }, { passive: true });
 function halfJa(h) { return h === "top" ? "表" : "裏"; }
 function pname(p) { return p ? (p.number ? `${p.number} ${p.name}` : p.name) : "—"; }
+// 投打（右投左打など） 未登録なら空
+const HAND_JA = { R: "右", L: "左", S: "両" };
+function handJa(p) {
+  if (!p || (!p.throws && !p.bats)) return "";
+  return `${p.throws ? HAND_JA[p.throws] + "投" : ""}${p.bats ? HAND_JA[p.bats] + "打" : ""}`;
+}
 function linkBtn(href, label, cls = "") {
   return `<a class="btn ${cls}" style="display:flex;align-items:center;justify-content:center;text-decoration:none" href="${esc(href)}" data-link>${esc(label)}</a>`;
 }
@@ -257,7 +263,7 @@ async function pageTeam(id) {
     document.getElementById("body").innerHTML = `
       <p class="muted" style="margin-top:12px">略称：${esc(t.short_name || "未設定")}${my && my.id === t.id ? " ／ 自分のチーム" : ""}</p>
       <div class="row-btns"><button class="btn primary" id="add">選手を追加</button><button class="btn" id="edit">チーム名・略称</button></div>
-      ${t.players.length ? `<div class="tiles">${t.players.map(p => `<button class="tile${p.active ? "" : " off"}" data-pid="${esc(p.id)}"><span class="no num">${esc(p.number || "－")}</span><span class="nm">${esc(p.name)}</span></button>`).join("")}</div>
+      ${t.players.length ? `<div class="tiles">${t.players.map(p => `<button class="tile${p.active ? "" : " off"}" data-pid="${esc(p.id)}"><span class="no num">${esc(p.number || "－")}</span><span class="nm">${esc(p.name)}</span>${handJa(p) ? `<span class="hd">${handJa(p)}</span>` : ""}</button>`).join("")}</div>
         <p class="muted">選手を押すと編集・成績の確認ができます</p>` : `<p class="muted">選手がまだいません</p>`}
       <div class="row-btns" style="margin-top:24px">
         <button class="btn" id="mine" ${my && my.id === t.id ? "disabled" : ""}>自分のチームにする</button>
@@ -287,18 +293,26 @@ function playerForm(teamId, p, after, editToken = null) {
     openSheet(`<h2>${p ? "選手を編集" : "選手を追加"}</h2>
       <label class="f" for="pn">名前</label><input id="pn" type="text" value="${esc(p?.name || "")}" autocomplete="off">
       <label class="f" for="pno">背番号（なくても可）</label><input id="pno" type="text" inputmode="numeric" value="${esc(p?.number || "")}">
+      <p class="sec muted" style="margin:14px 0 6px">投げる手</p>
+      <div class="chips">${[["", "未登録"], ["R", "右投"], ["L", "左投"]].map(([k, l]) => `<button class="chip ${(p?.throws || "") === k ? "on" : ""}" data-th="${k}">${l}</button>`).join("")}</div>
+      <p class="sec muted" style="margin:14px 0 6px">打つ打席</p>
+      <div class="chips">${[["", "未登録"], ["R", "右打"], ["L", "左打"], ["S", "両打"]].map(([k, l]) => `<button class="chip ${(p?.bats || "") === k ? "on" : ""}" data-bt="${k}">${l}</button>`).join("")}</div>
       ${p ? `<label class="check"><input id="pact" type="checkbox" ${p.active ? "checked" : ""}> 登録中（外すと入力の選択肢に出ません）</label>` : ""}
       <div class="sheet-actions"><button class="btn" data-a="c">やめる</button><button class="btn primary" data-a="ok">${p ? "保存" : "追加"}</button></div>`, el => {
       setTimeout(() => el.querySelector("#pn").focus(), 50);
+      let throws = p?.throws || "", bats = p?.bats || "";
+      el.querySelectorAll("[data-th]").forEach(b => b.onclick = () => { throws = b.dataset.th; el.querySelectorAll("[data-th]").forEach(x => x.classList.toggle("on", x === b)); });
+      el.querySelectorAll("[data-bt]").forEach(b => b.onclick = () => { bats = b.dataset.bt; el.querySelectorAll("[data-bt]").forEach(x => x.classList.toggle("on", x === b)); });
       el.querySelector("[data-a=c]").onclick = () => { closeSheet(); resolve(null); };
       el.querySelector("[data-a=ok]").onclick = async () => {
         const name = el.querySelector("#pn").value.trim();
         const number = el.querySelector("#pno").value.trim();
+        const hand = { throws: throws || null, bats: bats || null };
         if (!name) { toast("名前を入力してください", "err"); return; }
         try {
           let r;
-          if (p) r = await apiAdmin(`/api/players/${p.id}`, { method: "PATCH", body: { name, number, active: el.querySelector("#pact").checked } });
-          else r = await (editToken ? api : apiAdmin)(`/api/teams/${teamId}/players`, { method: "POST", body: { name, number }, headers: editToken ? { "X-Edit-Token": editToken } : {} });
+          if (p) r = await apiAdmin(`/api/players/${p.id}`, { method: "PATCH", body: { name, number, ...hand, active: el.querySelector("#pact").checked } });
+          else r = await (editToken ? api : apiAdmin)(`/api/teams/${teamId}/players`, { method: "POST", body: { name, number, ...hand }, headers: editToken ? { "X-Edit-Token": editToken } : {} });
           closeSheet(); toast(p ? "保存しました" : `${name}を追加しました`, "ok");
           if (after) await after(r);
           resolve(r);
@@ -477,9 +491,9 @@ function whoHtml(v) {
   if (v.status === "final" || !v.batter) return "";
   const seq = (v.pa_pitches || []).map(p => `<span class="pchip ${p === "ball" ? "b" : STRIKES.includes(p) ? "s" : ""}">${PITCH_SHORT[p] || "?"}</span>`).join("");
   return `<div class="who">
-    <div class="row"><span class="role">打者</span><span class="name">${v.batter ? `${v.batter.order}番 ${esc(pname(v.batter))}` : "—"}</span></div>
+    <div class="row"><span class="role">打者</span><span class="name">${v.batter ? `${v.batter.order}番 ${esc(pname(v.batter))}` : "—"}</span>${v.batter?.bats ? `<span class="hand">${HAND_JA[v.batter.bats]}打</span>` : ""}</div>
     <div class="row"><span class="role">次</span><span class="muted">${esc(pname(v.ondeck))}</span></div>
-    <div class="row"><span class="role">投手</span><span class="name">${esc(pname(v.pitcher))}</span><span class="muted num">${v.pitcher ? v.pitcher.pitches + "球" : ""}</span></div>
+    <div class="row"><span class="role">投手</span><span class="name">${esc(pname(v.pitcher))}</span>${v.pitcher?.throws ? `<span class="hand">${HAND_JA[v.pitcher.throws]}投</span>` : ""}<span class="muted num">${v.pitcher ? v.pitcher.pitches + "球" : ""}</span></div>
     <div class="pseq" aria-label="この打席の投球">${seq}</div>
   </div>`;
 }
@@ -948,6 +962,7 @@ const Editor = {
   menuSheet() {
     openSheet(`<h2>メニュー</h2>
       <button class="btn block" data-m="share">URLを共有（閲覧用・入力用）</button>
+      ${this.v.status === "pregame" ? `<button class="btn block" data-m="swap">先攻・後攻を入れ替える</button>` : ""}
       <button class="btn block" data-m="end" ${this.v.status !== "live" ? "disabled" : ""}>試合終了にする（時間切れ・コールドなど）</button>
       <button class="btn block" data-m="name">入力者の名前を変える（今：${esc(store.get("bs_name") || "未設定")}）</button>
       <a class="btn block" style="display:flex;align-items:center;justify-content:center;text-decoration:none" href="/api/edit/${esc(this.token)}/export">バックアップを書き出す</a>
@@ -959,11 +974,25 @@ const Editor = {
       el.querySelector("[data-m=share]").onclick = () => shareSheet(this.token, this.v.game.view_token);
       el.querySelector("[data-m=name]").onclick = async () => { const n = await askText("入力者の名前", "", store.get("bs_name") || ""); if (n) { store.set("bs_name", n); toast("変更しました", "ok"); } };
       el.querySelector("[data-m=end]").onclick = () => this.endSheet();
+      const sw = el.querySelector("[data-m=swap]");
+      if (sw) sw.onclick = () => this.swapSides();
       el.querySelector("[data-m=del]").onclick = async () => {
         if (!(await confirmSheet("試合を削除", "この試合の記録をすべて削除します 元に戻せません", "削除する", true))) return;
         try { await apiAdmin(`/api/edit/${this.token}`, { method: "DELETE" }); forgetGame(this.token); toast("削除しました"); go("/"); } catch (e) { showError(e); }
       };
     });
+  },
+  async swapSides() {
+    const v = this.v;
+    const ok = await confirmSheet("先攻・後攻を入れ替える",
+      `先攻：${esc(v.team_names.home)}、後攻：${esc(v.team_names.away)} に入れ替えます${v.lineups.away.set || v.lineups.home.set ? "<br>登録済みのスタメンもそのまま入れ替わります" : ""}`, "入れ替える");
+    if (!ok) return;
+    try {
+      this.v = await api(`/api/edit/${this.token}/swap`, { method: "POST", body: { client_id: clientId(), author: store.get("bs_name") } });
+      this._draft = {}; this._lineupSide = null;
+      rememberGame({ edit_token: this.token, view_token: this.v.game.view_token, label: `${this.v.team_names.away} 対 ${this.v.team_names.home}`, date: this.v.game.date });
+      toast("✓ 先攻・後攻を入れ替えました", "ok"); this.render();
+    } catch (e) { if (e.status === 409) await this.reload(); showError(e); }
   },
   endSheet() {
     openSheet(`<h2>試合終了にする</h2><p>今の得点で試合を終わらせます（規定の回数での終了・サヨナラは自動で終了します）</p>
@@ -997,7 +1026,7 @@ const Editor = {
     const players = this.v.roster[side];
     const q = (this._luSearch || "").trim();
     const match = p => !q || p.name.includes(q) || (p.number && String(p.number) === q);
-    const popts = sel => `<option value="">（選ぶ）</option>` + players.filter(p => p.id === sel || match(p)).map(p => `<option value="${esc(p.id)}" ${p.id === sel ? "selected" : ""}>${esc(pname(p))}</option>`).join("");
+    const popts = sel => `<option value="">（選ぶ）</option>` + players.filter(p => p.id === sel || match(p)).map(p => `<option value="${esc(p.id)}" ${p.id === sel ? "selected" : ""}>${esc(pname(p))}${handJa(p) ? "（" + handJa(p) + "）" : ""}</option>`).join("");
     const posopts = sel => `<option value="">守備</option>` + POS_CODES.map(c => `<option value="${c}" ${c === sel ? "selected" : ""}>${POS_CODE_JA[c]}</option>`).join("");
     const n = dr.slots.length;
     let rows;
@@ -1024,6 +1053,7 @@ const Editor = {
       <input id="lusearch" type="text" placeholder="名前・背番号で絞り込む" value="${esc(this._luSearch || "")}" style="margin-top:10px" autocomplete="off">
       ${rows}
       <div class="row-btns"><button class="btn" id="addp">選手を追加</button><button class="btn primary" id="saveL">このスタメンで登録</button></div>
+      ${this.v.status === "pregame" && !this.mode ? `<button class="btn block" id="swap">先攻・後攻を入れ替える</button>` : ""}
       ${(this.v.game.rules || {}).extra_hitters ? `<button class="btn small" id="more">打順を1人増やす</button>` : ""}
       <p class="muted">守備位置が分からない選手は空欄でも登録できます</p></div>`;
   },
@@ -1032,6 +1062,8 @@ const Editor = {
     const dr = this.draftFor(side, v);
     $app.querySelectorAll("[data-side]").forEach(b => b.onclick = () => { this._lineupSide = b.dataset.side; this.render(); });
     $app.querySelectorAll("[data-lum]").forEach(b => b.onclick = () => { this._luMode = b.dataset.lum; this.render(); });
+    const sw = document.getElementById("swap");
+    if (sw) sw.onclick = () => this.swapSides();
     const search = document.getElementById("lusearch");
     search.oninput = () => {
       this._luSearch = search.value;

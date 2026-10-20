@@ -95,7 +95,7 @@ def _roster(game: db.Game) -> dict:
     r = {}
     for side, team in (("away", game.away_team), ("home", game.home_team)):
         for p in team.players:
-            r[p.id] = {"name": p.name, "number": p.number, "team": side}
+            r[p.id] = {"name": p.name, "number": p.number, "team": side, "throws": p.throws, "bats": p.bats}
     return r
 
 
@@ -120,8 +120,12 @@ def _game_info(game: db.Game) -> dict:
     }
 
 
+def _pdict(p: db.Player) -> dict:
+    return {"id": p.id, "name": p.name, "number": p.number, "throws": p.throws, "bats": p.bats, "active": p.active}
+
+
 def _roster_lists(game: db.Game) -> dict:
-    return {side: [{"id": p.id, "name": p.name, "number": p.number} for p in team.players if p.active]
+    return {side: [_pdict(p) for p in team.players if p.active]
             for side, team in (("away", game.away_team), ("home", game.home_team))}
 
 
@@ -243,6 +247,8 @@ class TeamIn(BaseModel):
 class PlayerIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     number: str | None = None
+    throws: str | None = Field(default=None, pattern="^[RL]$")   # 投：R=右 L=左（空欄＝未登録）
+    bats: str | None = Field(default=None, pattern="^[RLS]$")    # 打：R=右 L=左 S=両
     active: bool = True
 
 
@@ -274,7 +280,7 @@ def get_team(team_id: str, s: Session = Depends(get_session)):
         raise err(404, "チームが見つかりません")
     games = s.scalars(select(db.Game.id).where((db.Game.away_team_id == t.id) | (db.Game.home_team_id == t.id))).all()
     return {"id": t.id, "name": t.name, "short_name": t.short_name, "games": len(games),
-            "players": [{"id": p.id, "name": p.name, "number": p.number, "active": p.active} for p in t.players]}
+            "players": [_pdict(p) for p in t.players]}
 
 
 @app.patch("/api/teams/{team_id}", dependencies=[Depends(require_passcode)])
@@ -317,10 +323,11 @@ def add_player(team_id: str, body: PlayerIn, s: Session = Depends(get_session),
         allowed = bool(g and team_id in (g.away_team_id, g.home_team_id))
     if not allowed:
         raise err(401, "選手を追加する権限がありません")
-    p = db.Player(team_id=team_id, name=body.name.strip(), number=(body.number or "").strip() or None)
+    p = db.Player(team_id=team_id, name=body.name.strip(), number=(body.number or "").strip() or None,
+                  throws=body.throws or None, bats=body.bats or None)
     s.add(p)
     s.commit()
-    return {"id": p.id, "name": p.name, "number": p.number}
+    return _pdict(p)
 
 
 @app.patch("/api/players/{player_id}", dependencies=[Depends(require_passcode)])
@@ -329,8 +336,9 @@ def edit_player(player_id: str, body: PlayerIn, s: Session = Depends(get_session
     if not p:
         raise err(404, "選手が見つかりません")
     p.name, p.number, p.active = body.name.strip(), (body.number or "").strip() or None, body.active
+    p.throws, p.bats = body.throws or None, body.bats or None
     s.commit()
-    return {"id": p.id, "name": p.name, "number": p.number, "active": p.active}
+    return _pdict(p)
 
 
 @app.get("/api/players/{player_id}/stats")
@@ -428,6 +436,43 @@ def delete_game(token: str, s: Session = Depends(get_session)):
                 s.delete(t)
     s.commit()
     return {"ok": True}
+
+
+class SwapIn(BaseModel):
+    client_id: str
+    author: str | None = None
+
+
+@app.post("/api/edit/{token}/swap")
+def swap_sides(token: str, body: SwapIn, s: Session = Depends(get_session)):
+    """先攻・後攻の入れ替え（試合開始前だけ） 登録済みのスタメンも一緒に入れ替える"""
+    game = _game_by(s, edit=token, lock=True)
+    _check_lock(game, body.client_id)
+    events = _events(s, game)
+    eff = effective_events(events)
+    if any(e["type"] != "lineup" for e in eff):
+        raise err(409, "試合が始まった後は先攻・後攻を入れ替えられません（記録を取り消してから行ってください）")
+    game.away_team_id, game.home_team_id = game.home_team_id, game.away_team_id
+    seq = game.version
+    for e in eff:
+        seq += 1
+        payload = dict(e["payload"])
+        payload["side"] = "home" if payload.get("side") == "away" else "away"
+        s.add(db.GameEvent(id=db.new_id(), game_id=game.id, seq=seq, type="correct",
+                           payload={"target": e["id"], "event": {"type": "lineup", "payload": payload}},
+                           meta={"note": "先攻・後攻の入れ替え"}, author=(body.author or "")[:50] or None,
+                           client_id=body.client_id))
+    game.version = seq
+    s.flush()
+    s.refresh(game)
+    events = _events(s, game)
+    g, halted = _compute(game, events)
+    _save_projections(s, game, g)
+    s.commit()
+    s.refresh(game)
+    v = _full_view(game, events, g, halted)
+    v.update({"mode": "edit", "edit_token": token, "roster": _roster_lists(game), "lock": _lock_info(game)})
+    return v
 
 
 @app.get("/api/edit/{token}/before/{event_id}")
