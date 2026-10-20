@@ -1452,14 +1452,15 @@ function wsResult(c) {
   const pos = c.pos ? String(c.pos) : "";
   const arcOver = (cx, cy) => `<path d="M${cx - 5} ${cy - 10} Q${cx} ${cy - 18} ${cx + 5} ${cy - 10}" class="arc"/>`;
   // ゴロ：数字と数字の間に∪の弧を描く（6∪3、一塁手が自分で踏んだら 3∪A）
-  const ground = (a, b) => wsText(x - 8, y, a, "t") + `<path d="M${x - 4} ${y - 8} Q${x - 1} ${y + 1} ${x + 2} ${y - 8}" class="arc"/>` + wsText(x + 7, y, b, b.length > 1 ? "t sm" : "t");
+  // ゴロ：守備の流れ（4-3、一塁手が自分で踏んだら3A）を書き、その下にゴロの記号∪を描く
+  const ground = t => wsText(x, y - 3, t, t.length > 4 ? "t sm" : "t") + `<path d="M${x - 7} ${y + 1} Q${x} ${y + 9} ${x + 7} ${y + 1}" class="arc"/>`;
   switch (c.result) {
     case "single": case "double": case "triple": case "home_run": {
       const box = c.pos && c.pos <= 6 ? `<rect x="${x - 7}" y="${y - 10}" width="14" height="13" class="box hit"/>` : "";
       return box + wsText(x, y, pos || "安", "t hit") + `<circle cx="${x + 8}" cy="${y - 9}" r="1.4" class="dot"/>`;
     }
     case "ground_out": case "sac_bunt": {
-      const g = f.length >= 2 ? ground(f[0], f.slice(1).join("")) : ground(f[0] || pos, f.length === 1 ? "A" : "");
+      const g = ground(f.length >= 2 ? f.join("-") : f.length === 1 ? `${f[0]}A` : pos);
       return (c.result === "sac_bunt" ? `<path d="M${x} ${y - 17} l9 9 -9 9 -9 -9 z" class="box"/>` : "") + g;
     }
     case "fly_out": case "sac_fly": case "infield_fly":
@@ -1473,7 +1474,7 @@ function wsResult(c) {
     case "hbp": return wsText(x, y, "DB");
     case "reach_on_error": return wsText(x, y, `${c.error_pos || pos}E`, "t err");
     case "fielders_choice": return wsText(x, y, "FC");
-    case "force_out": return ground(pos, "");
+    case "force_out": return ground(pos);
     case "interference": return wsText(x, y, "IF");
     default: return wsText(x, y, "?");
   }
@@ -1547,7 +1548,7 @@ async function pageScorebook(token) {
   $app.innerHTML = topbar("スコアブック", `<button id="print">印刷・PDF</button>`) + `
     <div class="sb-wrap">
       <p class="muted no-print">早稲田式で表示しています　右下＝一塁、右上＝二塁、左上＝三塁、左下＝本塁、中央＝最終結果（赤〇＝得点、Ⅰ〜Ⅲ＝アウト、l＝残塁）
-      <br>左の欄：●ボール ○見逃し ×空振り ∨ファウル　∪ゴロ ⌒フライ －ライナー K三振（逆K＝振り逃げ）B四球 DB死球 E失策 S盗塁 WP暴投 PB捕逸 BKボーク (数字)＝進塁させた打者の打順 T＝タッチアウト 左下の赤丸数字＝打点 ？＝未確認
+      <br>左の欄：●ボール ○見逃し ×空振り ∨ファウル　∪ゴロ（4-3の下に∪）⌒フライ －ライナー K三振（逆K＝振り逃げ）B四球 DB死球 E失策 S盗塁 WP暴投 PB捕逸 BKボーク (数字)＝進塁させた打者の打順 T＝タッチアウト 左下の赤丸数字＝打点 ？＝未確認
       <br>iPhoneは「印刷・PDF」→ 共有 → 「ファイルに保存」でPDFにできます</p>
       ${team("away")}${team("home")}
     </div>`;
