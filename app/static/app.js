@@ -1141,14 +1141,29 @@ const Editor = {
 // ================================================================ 打球・打席結果の入力
 const RESULT_CATS = {
   hit: { label: "安打", items: [["single", "単打"], ["double", "二塁打"], ["triple", "三塁打"], ["home_run", "本塁打"]] },
-  ground: { label: "ゴロ", items: [["ground_out", "ゴロアウト"], ["ground_dp", "併殺打"], ["force_out", "併殺崩れ・封殺"], ["fielders_choice", "野選"], ["reach_on_error_g", "失策で出塁"], ["sac_bunt", "犠打"]] },
+  ground: { label: "ゴロ", items: [["ground_out", "打者アウト"], ["ground_dp", "併殺（ゲッツー）"], ["force_out", "併殺崩れ（前の走者アウト・打者セーフ）"], ["fielders_choice", "野選（全員セーフ）"], ["single_inf", "内野安打（セーフ）"], ["reach_on_error_g", "失策で出塁"], ["sac_bunt", "犠打（バント）"]] },
   fly: { label: "フライ・ライナー", items: [["fly_out", "フライ"], ["line_out", "ライナー"], ["foul_fly", "ファウルフライ"], ["infield_fly", "インフィールドフライ"], ["sac_fly", "犠飛"], ["reach_on_error", "失策で出塁"]] },
   other: { label: "その他", items: [["interference", "打撃妨害"], ["batter_out_other", "守備妨害などでアウト"]] },
   kbb: { label: "三振・四死球", items: [["strikeout", "空振り三振"], ["strikeout_l", "見逃し三振"], ["strikeout_dropped", "振り逃げ（出塁）"], ["walk", "四球"], ["ibb", "申告敬遠"], ["hbp", "死球"]] },
 };
-const NEEDS_POS = new Set(["single", "double", "triple", "home_run", "ground_out", "ground_dp", "force_out", "fielders_choice", "reach_on_error_g", "reach_on_error", "sac_bunt", "fly_out", "line_out", "foul_fly", "infield_fly", "sac_fly"]);
+const NEEDS_POS = new Set(["single_inf", "single", "double", "triple", "home_run", "ground_out", "ground_dp", "force_out", "fielders_choice", "reach_on_error_g", "reach_on_error", "sac_bunt", "fly_out", "line_out", "foul_fly", "infield_fly", "sac_fly"]);
 const BATTER_OUT = new Set(["ground_out", "ground_dp", "fly_out", "line_out", "foul_fly", "infield_fly", "sac_fly", "sac_bunt", "strikeout", "strikeout_l", "batter_out_other"]);
 
+// 今の状況でありえる結果だけを出す（走者・アウト数で判定）
+function resultPossible(ui, v) {
+  const r1 = !!v.bases[1], r2 = !!v.bases[2], r3 = !!v.bases[3];
+  const any = r1 || r2 || r3, lt2 = v.outs < 2;
+  switch (ui) {
+    case "ground_dp": return any && lt2;
+    case "force_out": return r1;
+    case "fielders_choice": return any;
+    case "sac_bunt": return any && lt2;
+    case "sac_fly": return r3 && lt2;
+    case "infield_fly": return r1 && r2 && lt2;
+    case "strikeout_dropped": return !r1 || v.outs === 2;
+    default: return true;
+  }
+}
 const ResultSheet = {
   ed: null, kind: "in_play", st: null,
   open(ed, kind) {
@@ -1161,7 +1176,7 @@ const ResultSheet = {
   push(el) { this.keepInputs(el); this.hist.push(JSON.stringify(this.st)); },
   back() { if (!this.hist.length) return; this.st = JSON.parse(this.hist.pop()); this.redrawKeepScroll(); 
   },
-  engineResult(ui) { return { ground_dp: "ground_out", reach_on_error_g: "reach_on_error", strikeout_l: "strikeout" }[ui] || ui; },
+  engineResult(ui) { return { ground_dp: "ground_out", reach_on_error_g: "reach_on_error", strikeout_l: "strikeout", single_inf: "single" }[ui] || ui; },
   defaultFielders(ui, pos) {
     if (!pos) return "";
     if (["ground_out", "sac_bunt"].includes(ui)) return pos === 3 ? "3" : `${pos}-3`;
@@ -1173,33 +1188,55 @@ const ResultSheet = {
     const s = this.st;
     if (!s.ui || (NEEDS_POS.has(s.ui) && !s.pos)) { s.moves = null; return; }
     const res = this.engineResult(s.ui);
-    const req = s.ui === "ground_dp" ? "force_out" : res;
+    const v = this.ed.view;
+    // 併殺：一塁に走者がいれば「一塁走者が二塁で封殺」、いなければ一番先の走者をタッチアウトにしておく（違えば直せる）
+    const req = s.ui === "ground_dp" ? (v.bases[1] ? "force_out" : "ground_out") : res;
     try {
       const r = await api(`/api/edit/${this.ed.token}/suggest`, { method: "POST", body: { result: req, pos: s.pos, before: this.ed.mode?.target || null } });
       s.moves = r.moves.map(m => ({ ...m }));
       if (s.ui === "ground_dp") {
         const b = s.moves.find(m => m.from === "B"); b.to = "out";
+        if (!v.bases[1]) {
+          const lead = [3, 2].find(n => v.bases[n]);
+          s.moves = s.moves.filter(m => m.from !== lead);
+          s.moves.push({ from: lead, to: "out", how: "tag" });
+        }
         s.moves.filter(m => m.from !== "B" && m.to !== "out").forEach(m => { m.to = Math.min(4, m.from + 1); });
       }
       s.fielders = this.defaultFielders(s.ui, s.pos);
+      if (s.ui === "ground_dp") {
+        // 併殺の既定：前の走者を 6-4（遊→二）で封殺 → 打者は 4-3（二→一） つなげて 6-4-3
+        const lead = s.moves.find(m => m.from !== "B" && m.to === "out" && (m.fielders || []).length >= 2);
+        if (lead) s.fielders = `${lead.fielders[lead.fielders.length - 1]}-3`;
+      }
     } catch (e) { s.moves = null; showError(e); s.ui = null; }
   },
   draw(scrollToRunners = false) {
     const v = this.ed.view, s = this.st;
     const cats = this.kind === "pa" ? ["kbb", "hit", "ground", "fly", "other"] : ["hit", "ground", "fly", "other"];
     const cat = RESULT_CATS[s.cat];
-    const needsPos = s.ui && NEEDS_POS.has(s.ui);
+    const posFirst = s.cat === "ground";   // ゴロは「処理した野手 → アウト／セーフ」の順
+    const needsPos = posFirst || (s.ui && NEEDS_POS.has(s.ui));
     const ready = s.ui && (!needsPos || s.pos) && s.moves;
-    const step = !s.ui ? 1 : needsPos && !s.pos ? 2 : 3;
+    const items = cat.items.filter(([k]) => resultPossible(k, v));
     const resLabel = s.ui ? cat.items.find(x => x[0] === s.ui)?.[1] || "" : "";
-    const summary = s.ui ? `<div class="pick-summary">${esc(resLabel)}${s.pos ? ` ／ ${["single", "double", "triple", "home_run"].includes(s.ui) ? "方向" : "野手"}：${POS_JA[s.pos]}` : ""}</div>` : "";
+    const summary = s.ui ? `<div class="pick-summary">${posFirst && s.pos ? `${POS_JA[s.pos]}ゴロ ／ ` : ""}${esc(resLabel)}${!posFirst && s.pos ? ` ／ ${["single", "double", "triple", "home_run"].includes(s.ui) ? "方向" : "野手"}：${POS_JA[s.pos]}` : ""}</div>` : "";
+    const posLabel = s.ui && ["single", "double", "triple", "home_run"].includes(s.ui) ? "打球の方向" : "打球を処理した野手";
+    // 守備位置は球場の見た目どおりに並べる（左上から 左 中 右／遊 投 二／三 捕 一）
+    const posGrid = `<p class="sec">${posLabel}</p>
+      <div class="posgrid">${[7, 8, 9, 6, 1, 4, 5, 2, 3].map(n => `<button class="pos-btn ${s.pos === n ? "on" : ""}" data-pos="${n}">${POS_JA[n]}<small>${n}</small></button>`).join("")}</div>`;
+    const resGrid = items.length ? `<div class="res-grid${posFirst ? " wide" : ""}">${items.map(([k, l]) => `<button class="res ${k === s.ui ? "on" : ""}" data-ui="${k}">${l}</button>`).join("")}</div>` : "";
+    const steps = posFirst
+      ? [["位置", !s.pos ? "on" : "done"], ["アウト／セーフ", s.pos && !s.ui ? "on" : s.ui ? "done" : ""], ["走者", s.moves ? "on" : ""]]
+      : [["結果", !s.ui ? "on" : "done"], [needsPos || !s.ui ? "位置" : "—", s.ui && needsPos && !s.pos ? "on" : s.pos ? "done" : ""], ["走者", s.moves ? "on" : ""]];
+    let body;
+    if (posFirst) body = posGrid + (s.pos ? `<p class="sec">${POS_JA[s.pos]}ゴロの結果</p>${resGrid}` : "");
+    else body = resGrid + (needsPos ? posGrid : "");
     openSheet(`<h2>${this.kind === "pa" ? "打席の結果だけを入力" : "打球の結果"}</h2>
       ${this.kind === "pa" ? `<p class="muted">投球を記録しないで結果だけを残します（球数は数えません）</p>` : ""}
-      <ol class="steps"><li class="${step === 1 ? "on" : "done"}">結果</li><li class="${step === 2 ? "on" : step > 2 ? "done" : ""}">${needsPos || !s.ui ? "位置" : "—"}</li><li class="${step === 3 ? "on" : ""}">走者</li></ol>
+      <ol class="steps">${steps.map(([l, c]) => `<li class="${c}">${l}</li>`).join("")}</ol>
       <div class="chips cats">${cats.map(c => `<button class="chip ${c === s.cat ? "on" : ""}" data-cat="${c}">${RESULT_CATS[c].label}</button>`).join("")}</div>
-      <div class="res-grid">${cat.items.map(([k, l]) => `<button class="res ${k === s.ui ? "on" : ""}" data-ui="${k}">${l}</button>`).join("")}</div>
-      ${needsPos ? `<p class="sec">${["single", "double", "triple", "home_run"].includes(s.ui) ? "打球の方向" : "打球を処理した野手"}</p>
-        <div class="posgrid">${[7, 8, 9, 5, 6, 4, 3, 1, 2].map(n => `<button class="pos-btn ${s.pos === n ? "on" : ""}" data-pos="${n}">${POS_JA[n]}<small>${n}</small></button>`).join("")}</div>` : ""}
+      ${body}
       <div id="runners-anchor"></div>
       ${s.moves ? summary + this.runnersHtml(v) : ""}
       <div class="sheet-actions"><button class="btn" data-a="back" ${this.hist.length ? "" : "disabled"}>1つ戻る</button><button class="btn" data-a="c">やめる</button><button class="btn primary" data-a="ok" ${ready ? "" : "disabled"}>記録する</button></div>`, el => {
@@ -1248,10 +1285,14 @@ const ResultSheet = {
       if (b.dataset.ui === s.ui) return;
       this.push(el);
       s.ui = b.dataset.ui; s.moves = null; s.rbi = null;
-      if (!NEEDS_POS.has(s.ui)) s.pos = null;
+      if (!NEEDS_POS.has(s.ui) && s.cat !== "ground") s.pos = null;
       await this.loadMoves(); this.draw(!!s.moves);
     });
-    el.querySelectorAll("[data-pos]").forEach(b => b.onclick = async () => { if (parseInt(b.dataset.pos, 10) === s.pos) return; this.push(el); s.pos = parseInt(b.dataset.pos, 10); await this.loadMoves(); this.draw(true); });
+    el.querySelectorAll("[data-pos]").forEach(b => b.onclick = async () => {
+      if (parseInt(b.dataset.pos, 10) === s.pos) return;
+      this.push(el); s.pos = parseInt(b.dataset.pos, 10);
+      if (s.ui) { await this.loadMoves(); this.draw(true); } else this.redrawKeepScroll();
+    });
     el.querySelectorAll("[data-m]").forEach(b => b.onclick = () => {
       const from = b.dataset.m === "B" ? "B" : parseInt(b.dataset.m, 10);
       const to = b.dataset.to === "out" ? "out" : parseInt(b.dataset.to, 10);

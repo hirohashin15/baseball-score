@@ -336,3 +336,7 @@ table.sb td { min-width: 82px; height: 68px; }
 /* 投打の表示 */
 .tile .hd { font-size: .72rem; color: var(--muted); }
 .who .hand { font-size: .75rem; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; flex: none; }
+
+/* ゴロの結果（長い文言）は2列 */
+.res-grid.wide { grid-template-columns: repeat(2, 1fr); }
+.res-grid.wide .res { font-size: .85rem; line-height: 1.3; }

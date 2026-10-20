@@ -172,7 +172,7 @@ def _pa_view(g: Game, pa: dict) -> dict:
         "no": pa["no"], "side": pa["side"], "inning": pa["inning"], "half": pa["half"],
         "order": pa.get("order"), "batter": _player(g, pa.get("batter")),
         "pitcher": _player(g, pa.get("pitcher")), "result": pa.get("result"),
-        "label": pa.get("label"), "code": pa.get("code"), "rbi": pa.get("rbi", 0),
+        "label": pa.get("label"), "code": pa.get("code"), "seq": pa.get("seq"), "rbi": pa.get("rbi", 0),
         "runs": pa.get("runs", 0), "outs_after": pa.get("outs_after"),
         "pitches": pa.get("pitches", []), "unrecorded": pa.get("unrecorded"),
         "unconfirmed": pa.get("unconfirmed"), "event_ids": pa.get("event_ids", []),
