@@ -553,3 +553,38 @@ def test_left_right_splits():
     assert a4["R"]["H"] == 1
     hp1 = splits(st["HP1"]["pit"])
     assert hp1["R"]["HR"] == 1                # 両打のA1は右打者として数える
+
+
+# ---------------------------------------------------------------- 守備のまとめて変更
+def test_fielder_becomes_pitcher():
+    t = G()
+    t.three_outs()
+    t.sub(kind="pitcher", side="home", in_player="H2")   # 遊撃手H2が投手へ
+    g = t.ok()
+    tm = g.teams["home"]
+    assert tm.pitcher == "H2" and tm.positions[1] == "H2"
+    assert "H2" in tm.slots and "H9" in tm.slots           # 打順は変わらない
+
+
+def test_bulk_rotation_p_2b_ss_and_bench_entry():
+    t = G()
+    t.three_outs()                                          # 1回表（HP1）
+    # 投手HP1(打順外)→遊撃、遊撃H2→二塁、二塁H3→投手 （DHなので投手の打順なし）
+    t.sub(kind="bulk", side="home", positions={"P": "H3", "C": "H8", "1B": "H4", "2B": "H2", "3B": "H5",
+                                                "SS": "HS1", "LF": "H6", "RF": "H7", "CF": "H1"},
+          order={"HS1": "H9"})                              # 控えHS1がDHのH9の打順に入って遊撃へ
+    t.pa("strikeout")
+    g = t.ok()
+    tm = g.teams["home"]
+    assert tm.pitcher == "H3" and tm.positions[4] == "H2" and tm.positions[6] == "HS1"
+    assert tm.slots[8] == "HS1" and "H9" in tm.removed and "HP1" in tm.removed
+    assert g.pit["H3"]["SO"] == 0 and g.pit["H3"]["BF"] == 0   # 1回裏は赤の攻撃→青の投手は投げていない
+    assert "H3" in tm.pitchers_used
+
+
+def test_bulk_requires_order_for_bench_player():
+    t = G()
+    t.sub(kind="bulk", side="home", positions={"P": "HP1", "C": "H8", "1B": "H4", "2B": "H3", "3B": "H5",
+                                                "SS": "HS1", "LF": "H6", "RF": "H7", "CF": "H1"})
+    _, halted = t.run()
+    assert halted and "誰と交代" in halted["message"]

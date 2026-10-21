@@ -1430,6 +1430,7 @@ const RunnerSheet = {
 };
 
 // ================================================================ 選手交代
+const BULK_CODES = ["P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF"];
 const SubSheet = {
   ed: null, st: null,
   open(ed) {
@@ -1440,7 +1441,7 @@ const SubSheet = {
   },
   draw() {
     const v = this.ed.view, s = this.st, r = this.ed.v.roster;
-    const kinds = [["pinch_hitter", "代打"], ["pinch_runner", "代走"], ["temp_runner", "臨時代走"], ["pitcher", "投手交代"], ["defense", "守備交代"], ["position", "守備位置の変更"]];
+    const kinds = [["pinch_hitter", "代打"], ["pinch_runner", "代走"], ["temp_runner", "臨時代走"], ["pitcher", "投手交代"], ["bulk", "守備変更（まとめて）"], ["defense", "守備交代（1人）"], ["position", "守備位置の変更（1人）"]];
     if (["pinch_hitter", "pinch_runner", "temp_runner"].includes(s.kind)) s.side = v.batting_side;
     const lu = v.lineups[s.side];
     const inLineup = new Set(lu.slots.map(x => x.id));
@@ -1461,7 +1462,10 @@ const SubSheet = {
     } else if (s.kind === "pitcher") {
       fields = `<p>今の投手：<b>${esc(lu.pitcher ? lu.pitcher.name : "—")}</b></p>
         <label class="f" for="inP">新しい投手</label><select id="inP"><option value="">（選ぶ）</option>${r[s.side].filter(p => !lu.pitcher || p.id !== lu.pitcher.id).map(p => `<option value="${esc(p.id)}" ${s.inP === p.id ? "selected" : ""}>${esc(pname(p))}${inLineup.has(p.id) ? "（守備から）" : ""}</option>`).join("")}</select>
-        <label class="f" for="outP">打順で入れ替わる選手（DHで打順に入らないなら空欄）</label><select id="outP"><option value="">（なし）</option>${lineupOpts(s.outP)}</select>`;
+        ${inLineup.has(s.inP) ? `<p class="muted">守備に就いていた選手が投手になります 打順はそのまま、元の守備位置は空くので「守備変更（まとめて）」で埋めてください（投手と野手の入れ替えをまとめて入れるなら最初からそちらが楽です）</p>`
+          : `<label class="f" for="outP">打順で入れ替わる選手（DHで打順に入らないなら空欄）</label><select id="outP"><option value="">（なし）</option>${lineupOpts(s.outP)}</select>`}`;
+    } else if (s.kind === "bulk") {
+      fields = this.bulkHtml(lu, r[s.side], inLineup, removed);
     } else if (s.kind === "defense") {
       fields = `<label class="f" for="outP">退く選手</label><select id="outP"><option value="">（選ぶ）</option>${lineupOpts(s.outP)}</select>
         <label class="f" for="inP">入る選手</label><select id="inP"><option value="">（選ぶ）</option>${benchOpts}</select>
@@ -1470,11 +1474,51 @@ const SubSheet = {
       fields = `<label class="f" for="inP">選手</label><select id="inP"><option value="">（選ぶ）</option>${lineupOpts(s.inP)}</select>
         <label class="f" for="pos">新しい守備位置</label><select id="pos"><option value="">（選ぶ）</option>${posOpts}</select>`;
     }
-    const sidePick = ["pitcher", "defense", "position"].includes(s.kind)
+    const sidePick = ["pitcher", "bulk", "defense", "position"].includes(s.kind)
       ? `<div class="chips" style="margin-top:10px">${["away", "home"].map(x => `<button class="chip ${s.side === x ? "on" : ""}" data-side="${x}">${esc(this.ed.v.team_names[x])}</button>`).join("")}</div>` : "";
     openSheet(`<h2>選手交代</h2><div class="chips">${kinds.map(([k, l]) => `<button class="chip ${s.kind === k ? "on" : ""}" data-k="${k}">${l}</button>`).join("")}</div>
       ${sidePick}${fields}
       <div class="sheet-actions"><button class="btn" data-a="back" ${this.hist.length ? "" : "disabled"}>1つ戻る</button><button class="btn" data-a="c">やめる</button><button class="btn primary" data-a="ok">交代を記録</button></div>`, el => this.bind(el));
+  },
+  // 守備変更（まとめて）の画面
+  bulkHtml(lu, players, inLineup, removed) {
+    const s = this.st;
+    const dh = !!(this.ed.v.game.rules || {}).dh;
+    if (!s.bulk) {
+      s.bulk = {};
+      for (const x of lu.slots) if (x.position && x.position !== "DH" && x.position !== "P") s.bulk[x.position] = x.id;
+      if (lu.pitcher) s.bulk.P = lu.pitcher.id;
+      s.bulkInit = { ...s.bulk }; s.order = {};
+    }
+    const all = [...players];
+    if (lu.pitcher && !all.some(p => p.id === lu.pitcher.id)) all.push(lu.pitcher);
+    const nameOf = id => (all.find(p => p.id === id) || lu.slots.find(x => x.id === id) || {}).name || "";
+    const assigned = new Set(Object.values(s.bulk).filter(Boolean));
+    // 控えから入る選手（打順に入っていない） 投手はDHありなら打順外でもよい
+    this._entering = BULK_CODES.map(c => s.bulk[c]).filter(id => id && !inLineup.has(id) && !(dh && id === s.bulk.P));
+    const leaving = lu.slots.filter(x => !assigned.has(x.id));
+    const rows = BULK_CODES.map(c => {
+      const id = s.bulk[c] || "";
+      const changed = id !== (s.bulkInit[c] || "");
+      const opts = all.map(p => `<option value="${esc(p.id)}" ${p.id === id ? "selected" : ""}>${esc(pname(p))}${inLineup.has(p.id) ? "" : removed.has(p.id) ? "（再出場）" : "（控え）"}</option>`).join("");
+      return `<div class="lineup-row bulk${changed ? " changed" : ""}"><span class="o">${POS_CODE_JA[c]}</span><select data-bp="${c}" aria-label="${POS_CODE_NAME[c]}"><option value="">（空き）</option>${opts}</select></div>`;
+    }).join("");
+    const entering = this._entering.map(id => {
+      const code = BULK_CODES.find(c => s.bulk[c] === id);
+      const prevHolder = s.bulkInit[code];
+      if (!s.order[id] || !leaving.some(x => x.id === s.order[id])) {
+        const used = new Set(Object.entries(s.order).filter(([k]) => k !== id).map(([, v]) => v));
+        const pick = leaving.find(x => x.id === prevHolder && !used.has(x.id)) || leaving.find(x => !used.has(x.id));
+        s.order[id] = pick ? pick.id : "";
+      }
+      return `<label class="f">${esc(nameOf(id))}（${POS_CODE_JA[code]}）が入る打順</label>
+        <select data-bo="${esc(id)}"><option value="">（選ぶ）</option>${leaving.map(x => `<option value="${esc(x.id)}" ${s.order[id] === x.id ? "selected" : ""}>${x.order}番 ${esc(x.name)} と交代</option>`).join("")}</select>`;
+    }).join("");
+    const pairedOut = new Set(Object.values(s.order));
+    const noPos = leaving.filter(x => !pairedOut.has(x.id));
+    return `<p class="muted" style="margin-top:10px">守備位置ごとに選手を選んでください 同じ選手を選ぶと元の位置と入れ替わります（色が付いたところが変更）</p>
+      ${rows}${entering ? `<p class="sec">控えから入る選手</p>${entering}` : ""}
+      ${noPos.length ? `<p class="muted">守備に就かない打者：${noPos.map(x => `${x.order}番 ${esc(x.name)}`).join("、")}${dh ? "（DH）" : ""}</p>` : ""}`;
   },
   bind(el) {
     const s = this.st, v = this.ed.view;
@@ -1484,13 +1528,36 @@ const SubSheet = {
     el.querySelector("[data-a=back]").onclick = () => { if (this.hist.length) { this.st = JSON.parse(this.hist.pop()); this.draw(); } };
     ["inP", "outP", "pos"].forEach(id => { const x = el.querySelector("#" + id); if (x) { x.onfocus = () => { this._snap = JSON.stringify(this.st); }; x.onchange = () => { if (this._snap) this.hist.push(this._snap); keep(); this.draw(); }; } });
     el.querySelectorAll("[data-k]").forEach(b => b.onclick = () => {
-      push(); s.kind = b.dataset.k; s.inP = s.outP = s.pos = ""; s.base = null;
-      s.side = s.kind === "pitcher" ? (v.batting_side === "away" ? "home" : "away") : v.batting_side; this.draw();
+      push(); s.kind = b.dataset.k; s.inP = s.outP = s.pos = ""; s.base = null; s.bulk = null;
+      s.side = ["pitcher", "bulk"].includes(s.kind) ? (v.batting_side === "away" ? "home" : "away") : v.batting_side; this.draw();
     });
-    el.querySelectorAll("[data-side]").forEach(b => b.onclick = () => { push(); s.side = b.dataset.side; s.inP = s.outP = ""; this.draw(); });
+    el.querySelectorAll("[data-side]").forEach(b => b.onclick = () => { push(); s.side = b.dataset.side; s.inP = s.outP = ""; s.bulk = null; this.draw(); });
+    // まとめて変更：守備位置ごとの選手（同じ選手を選んだら元の位置と入れ替え）
+    el.querySelectorAll("[data-bp]").forEach(x => x.onchange = () => {
+      push();
+      const code = x.dataset.bp, val = x.value, prev = s.bulk[code];
+      for (const c of Object.keys(s.bulk)) if (c !== code && s.bulk[c] === val) s.bulk[c] = prev;
+      s.bulk[code] = val; this.draw();
+    });
+    el.querySelectorAll("[data-bo]").forEach(x => x.onchange = () => { push(); s.order[x.dataset.bo] = x.value; this.draw(); });
     el.querySelectorAll("[data-b]").forEach(b => b.onclick = () => { push(); s.base = parseInt(b.dataset.b, 10); this.draw(); });
     el.querySelector("[data-a=ok]").onclick = async () => {
       keep();
+      if (s.kind === "bulk") {
+        const missing = BULK_CODES.filter(c => !s.bulk[c]);
+        if (missing.length) { toast(`${missing.map(c => POS_CODE_NAME[c]).join("・")}が空いています`, "err"); return; }
+        const order = {};
+        for (const id of this._entering) {
+          if (!s.order[id]) { toast("控えから入る選手の打順（誰と交代か）を選んでください", "err"); return; }
+          order[id] = s.order[id];
+        }
+        if (new Set(Object.values(order)).size !== Object.keys(order).length) { toast("同じ選手と2人が交代しています", "err"); return; }
+        const changes = {};
+        for (const c of BULK_CODES) if (s.bulk[c] !== s.bulkInit[c]) changes[c] = s.bulk[c];
+        if (!Object.keys(changes).length) { toast("変更がありません", "err"); return; }
+        await this.ed.send("sub", { kind: "bulk", side: s.side, positions: s.bulk, order, changes });
+        return;
+      }
       if (!s.inP) { toast("選手を選んでください", "err"); return; }
       const p = { kind: s.kind, side: s.side, in_player: s.inP };
       if (["pinch_runner", "temp_runner"].includes(s.kind)) { if (!s.base) { toast("塁を選んでください", "err"); return; } p.base = s.base; }

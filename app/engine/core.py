@@ -1140,24 +1140,20 @@ class Game:
         t = self.teams[side]
         if not t.lineup_set:
             raise RuleError("スタメン登録の前に交代はできません")
+        if kind == "bulk":
+            self._sub_bulk(side, t, p)
+            return
         new = p.get("in_player")
         if not new:
             raise RuleError("出場する選手を指定してください")
         if kind != "temp_runner" and new in t.removed and not self.rules.get("reentry"):
             raise RuleError(f"{self.name(new)}は一度退いているため再出場できません（試合設定で再出場がOFF）")
-        if kind != "temp_runner" and kind != "position" and new in t.slots:
+        # 野手から投手への変更（打順はそのまま）は認める
+        if kind not in ("temp_runner", "position", "pitcher") and new in t.slots:
             raise RuleError(f"{self.name(new)}はすでに打順に入っています")
 
         def replace_slot(old: str, new_pid: str) -> None:
-            idx = t.slots.index(old)
-            t.slots[idx] = new_pid
-            t.slot_history.append((idx + 1, new_pid))
-            t.removed.add(old)
-            t.removed.discard(new_pid)
-            t.used.add(new_pid)
-            for k, v in list(t.positions.items()):
-                if v == old:
-                    del t.positions[k]
+            self._replace_slot(t, old, new_pid)
 
         if kind == "pinch_hitter":
             if side != self.bat_side or self.status != "live":
@@ -1188,10 +1184,13 @@ class Game:
             old = t.pitcher
             if old == new:
                 raise RuleError("同じ投手です")
-            if self.open_stint[side] is not None and self.open_stint[side]["pid"] == old:
-                self._close_stint(side)
+            from_field = new in t.slots
             out_player = p.get("out_player")
-            if out_player and out_player in t.slots:
+            if from_field:
+                # 野手が投手になる：打順はそのまま 元の守備位置は空く（守備位置の変更で埋める）
+                if old not in t.slots:
+                    t.removed.add(old)
+            elif out_player and out_player in t.slots:
                 replace_slot(out_player, new)
             elif old in t.slots and not p.get("keep_in_lineup"):
                 replace_slot(old, new)
@@ -1199,20 +1198,7 @@ class Game:
                 if old not in t.slots:
                     t.removed.add(old)
                 t.used.add(new)
-            # 新しい投手が他の守備位置にいた場合はそこを空ける
-            for k, v in list(t.positions.items()):
-                if v == new:
-                    del t.positions[k]
-            t.pitcher = new
-            t.positions[1] = new
-            if new not in t.pitchers_used:
-                t.pitchers_used.append(new)
-            if self.status == "live" and side == self.def_side:
-                self.entry_chances[new] = self.chances
-            if self.pa is not None and side == self.def_side:
-                self.pa["prev_pitcher"] = self.pa["pitcher"]
-                self.pa["change_count"] = (self.balls, self.strikes)
-                self.pa["pitcher"] = new
+            self._set_pitcher(side, t, new)
         elif kind in ("defense", "position"):
             pos = p.get("position")
             num = nt.POS_CODE.get(pos) if pos else None
@@ -1231,6 +1217,84 @@ class Game:
                 t.positions[num] = new
         else:
             raise RuleError(f"交代の種類が読み取れません：{kind}")
+
+    def _replace_slot(self, t: TeamState, old: str, new_pid: str) -> None:
+        """打順の入れ替え（old が退いて new_pid がその打順に入る）"""
+        if new_pid in t.removed and not self.rules.get("reentry"):
+            raise RuleError(f"{self.name(new_pid)}は一度退いているため再出場できません（試合設定で再出場がOFF）")
+        idx = t.slots.index(old)
+        t.slots[idx] = new_pid
+        t.slot_history.append((idx + 1, new_pid))
+        t.removed.add(old)
+        t.removed.discard(new_pid)
+        t.used.add(new_pid)
+        for k, v in list(t.positions.items()):
+            if v == old:
+                del t.positions[k]
+
+    def _set_pitcher(self, side: str, t: TeamState, new: str) -> None:
+        """投手を new にする（登板記録・打席途中の交代の扱いも更新）"""
+        old = t.pitcher
+        if old == new:
+            return
+        if self.open_stint[side] is not None and self.open_stint[side]["pid"] == old:
+            self._close_stint(side)
+        for k, v in list(t.positions.items()):
+            if v == new:
+                del t.positions[k]
+        t.pitcher = new
+        t.positions[1] = new
+        t.used.add(new)
+        if new not in t.pitchers_used:
+            t.pitchers_used.append(new)
+        if self.status == "live" and side == self.def_side:
+            self.entry_chances[new] = self.chances
+        if self.pa is not None and side == self.def_side:
+            self.pa["prev_pitcher"] = self.pa["pitcher"]
+            self.pa["change_count"] = (self.balls, self.strikes)
+            self.pa["pitcher"] = new
+
+    def _sub_bulk(self, side: str, t: TeamState, p: dict) -> None:
+        """守備のまとめて変更（例：投手と二塁手と遊撃手の入れ替え、控え選手の途中出場を同時に）
+
+        p = {"positions": {"P": 選手, "C": 選手, ...}, "order": {入る選手: 退く選手}}
+        ・守備に就く選手は1人1か所
+        ・控えから入る選手は、order で「誰の打順に入るか」を指定（退く選手は守備から外れる）
+        """
+        new_pos: dict[int, str] = {}
+        seen: set[str] = set()
+        for code, pid in (p.get("positions") or {}).items():
+            if not pid or code == "DH":
+                continue
+            num = nt.POS_CODE.get(code)
+            if num is None:
+                raise RuleError(f"守備位置が読み取れません：{code}")
+            if pid in seen:
+                raise RuleError(f"{self.name(pid)}が2つの守備位置に入っています")
+            seen.add(pid)
+            new_pos[num] = pid
+        if 1 not in new_pos:
+            raise RuleError("投手を指定してください")
+        # 控えから入る選手を打順に入れる
+        for in_pid, out_pid in (p.get("order") or {}).items():
+            if out_pid not in t.slots:
+                raise RuleError(f"{self.name(out_pid)}は打順に入っていません")
+            if in_pid in t.slots:
+                raise RuleError(f"{self.name(in_pid)}はすでに打順に入っています")
+            self._replace_slot(t, out_pid, in_pid)
+        for num, pid in new_pos.items():
+            if pid not in t.slots and not (num == 1 and self.rules.get("dh")):
+                raise RuleError(f"{self.name(pid)}は打順に入っていません 誰と交代するか選んでください")
+            if pid in t.removed and pid not in t.slots and not self.rules.get("reentry"):
+                raise RuleError(f"{self.name(pid)}は一度退いているため再出場できません（試合設定で再出場がOFF）")
+        old_pitcher = t.pitcher
+        new_pitcher = new_pos[1]
+        if new_pitcher != old_pitcher and old_pitcher not in t.slots:
+            t.removed.add(old_pitcher)
+        self._set_pitcher(side, t, new_pitcher)
+        t.positions = dict(new_pos)
+        for pid in new_pos.values():
+            t.used.add(pid)
 
     # ------------------------------------------------------------ 勝敗投手
     def _compute_decisions(self) -> None:
@@ -1359,6 +1423,10 @@ class Game:
         if typ == "sub":
             kind = {"pinch_hitter": "代打", "pinch_runner": "代走", "temp_runner": "臨時代走",
                     "pitcher": "投手交代", "defense": "守備交代", "position": "守備位置変更"}.get(p.get("kind"), "交代")
+            if p.get("kind") == "bulk":
+                parts = [f"{nt.POS_JA.get(nt.POS_CODE.get(c), c)}：{self.name(pid)}"
+                         for c, pid in (p.get("changes") or {}).items()]
+                return f"{head} 守備変更（{'、'.join(parts) or 'まとめて'}）"
             return f"{head} {kind}：{self.name(p.get('in_player'))}"
         if typ == "end":
             return "試合終了"

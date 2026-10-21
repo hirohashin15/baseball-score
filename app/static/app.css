@@ -340,3 +340,7 @@ table.sb td { min-width: 82px; height: 68px; }
 /* ゴロの結果（長い文言）は2列 */
 .res-grid.wide { grid-template-columns: repeat(2, 1fr); }
 .res-grid.wide .res { font-size: .85rem; line-height: 1.3; }
+
+/* 守備変更（まとめて） */
+.lineup-row.bulk { grid-template-columns: 28px 1fr; }
+.lineup-row.bulk.changed select { border-color: var(--lamp-s); background: #fffbe6; font-weight: 700; }
